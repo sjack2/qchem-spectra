@@ -1,0 +1,21 @@
+# =============================================================================
+# cluster.cfg — Site-specific configuration for qchem-spectra workflow
+# =============================================================================
+# Copy this file to cluster.cfg and fill in the values for your cluster.
+# cluster.cfg is sourced automatically by each script at startup; CLI flags
+# always override values set here.
+#
+# Supported variables (all optional):
+#   QCHEM_SETUP        — path to the Q-Chem setup script (sets QC, QCAUX, PATH)
+#   CLUSTER_PARTITION  — default SLURM partition name
+#   CLUSTER_WALL       — default SLURM wall-clock limit (HH:MM:SS)
+#                        Note: each script has its own stage-appropriate default;
+#                        set this only if you want a global override.
+# =============================================================================
+
+# Full path to the Q-Chem setup script for your installation
+QCHEM_SETUP=/path/to/qchem/setqc
+
+# SLURM defaults
+CLUSTER_PARTITION=general
+# CLUSTER_WALL=04:00:00    # uncomment to override per-script defaults

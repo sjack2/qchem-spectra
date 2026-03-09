@@ -1,132 +1,221 @@
 #!/usr/bin/env bash
-# -----------------------------------------------------------------------------
-# 6-qchem-tddft.sh – Submit TD-DFT (UV-Vis + ECD) single-point calculations in
-#                    implicit solvent for every Boltzmann-kept conformer.
-# -----------------------------------------------------------------------------
-# Uses SMD by default (water); choose another solvent via --solvent.
-# Geometry is extracted on-the-fly from the solvent_opt output files (step 4).
-# -----------------------------------------------------------------------------
+# ============================================================================
+# 6-qchem-tddft.sh — TD-DFT UV-Vis + ECD for Boltzmann-kept conformers
+# ============================================================================
+#
+# OVERVIEW
+#   For each conformer retained by Stage 5, this script:
+#     1. Extracts the optimised geometry from the Stage 4 output,
+#     2. Writes a TD-DFT single-point Q-Chem input with implicit solvent (SMD),
+#     3. Submits a SLURM job.
+#
+#   Q-Chem 7 automatically prints an ECD spectrum alongside the UV-Vis data
+#   for every TD-DFT calculation.
+#
+# Usage:
+#   6-qchem-tddft.sh TAG
+#   6-qchem-tddft.sh --list mols.txt --method CAM-B3LYP --roots 40 --dry-run
+#
+# Flags:
+#   -m | --method NAME       TD-DFT functional            [B3LYP]
+#   -b | --basis NAME        Basis set                    [6-31+G(d)]
+#        --roots N           Number of excited states     [30]
+#        --solvent NAME      SMD solvent                  [water]
+#        --max-scf N         Max SCF cycles               [150]
+#   -c | --cpus N            CPU cores                    [12]
+#        --mem-per-cpu MB    Memory per core (MB)         [2048]
+#        --partition NAME    SLURM partition              [general]
+#        --time HH:MM:SS     Wall-clock limit             [04:00:00]
+#        --list FILE         File of molecule TAGs
+#        --dry-run           Write inputs but do not submit
+#   -h | --help              Show this help and exit
+#
+# Cluster configuration (cluster.cfg):
+#   See cluster.cfg.example for supported variables.
+#
+# Directory layout:
+#   <TAG>/
+#   ├── 03_solvent_opt/<CID>/<CID>.out    ← Stage 4 geometry source
+#   ├── 04_boltzmann/<TAG>_bw_labels.dat  ← Stage 5 conformer list
+#   └── 05_tddft/
+#       └── <CID>/
+#           ├── <CID>.inp
+#           ├── <CID>.out    (after job completes)
+#           └── <CID>.slurm
+#
+# ============================================================================
+
 set -euo pipefail
 IFS=$'\n\t'
 
-# --------------------------- default parameters ---------------------------
+# ============================================================================
+# DEFAULTS
+# ============================================================================
 DEFAULT_METHOD="B3LYP"
 DEFAULT_BASIS="6-31+G(d)"
 DEFAULT_ROOTS=30
 DEFAULT_SOLVENT="water"
-DEFAULT_CPUS=12
-DEFAULT_MEM=2048           # MB per CPU
-DEFAULT_PART=circe
-DEFAULT_WALL="4:00:00"
 DEFAULT_MAX_SCF=150
-SOLV_OUT_DIR="solvent_opt"   # <tag>/solvent_opt/<CID>/<CID>.out
-PRE_DIR="pre_xyz"            # charge/mult source
+DEFAULT_CPUS=12
+DEFAULT_MEM_PER_CPU=2048
+DEFAULT_PARTITION="general"
+DEFAULT_WALL="04:00:00"
 
-# ------------------------------ utilities ---------------------------------
-log(){ printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
-err(){ echo "Error: $*" >&2; exit 1; }
-pre_xyz(){ printf '%s/%s.xyz' "$PRE_DIR" "$1"; }
-charge_mult(){ awk 'NR==2{print $1,$2}' "$1"; }
+XYZ_DIR="pre_xyz"
+SOLV_OUT_DIR="03_solvent_opt"
+BW_SUBDIR="04_boltzmann"
+OUT_SUBDIR="05_tddft"
 
-# ---- on-the-fly geometry extractor (last optimised geometry from .out) ------
-qcout2xyz(){ python3 - "$1" <<'PY'
+# ============================================================================
+# CLUSTER CONFIG
+# ============================================================================
+source_cluster_cfg() {
+    local script_dir cfg
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    cfg="${script_dir}/cluster.cfg"
+    if [[ -f $cfg ]]; then
+        log "Loaded cluster config: ${cfg}"
+        # shellcheck source=/dev/null
+        source "$cfg"
+    fi
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+die()          { printf 'Error: %s\n' "$*" >&2; exit 1; }
+log()          { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2; }
+warn()         { printf '[%s] Warning: %s\n' "$(date '+%F %T')" "$*" >&2; }
+require_file() { [[ -f $1 ]] || die "File '$1' not found"; }
+
+show_help() {
+    sed -n '/^# Usage:/,/^# ====/p' "$0" | head -n -1 | sed 's/^# \{0,1\}//'
+    exit 0
+}
+
+# ============================================================================
+# Q-CHEM OUTPUT → XYZ EXTRACTOR (last geometry in file)
+# ============================================================================
+qcout2xyz() {
+    python3 - "$1" <<'PY'
 import pathlib, re, sys
-lines=pathlib.Path(sys.argv[1]).read_text(errors="ignore").splitlines()
-hdr=re.compile(r'(Standard Nuclear Orientation|Input orientation|Coordinates \(Angstroms\))',re.I)
-start=None
-for i in range(len(lines)-1,-1,-1):
-    if hdr.search(lines[i]): start=i+3; break
-if start is None: sys.exit(1)
-geom=[]
+lines = pathlib.Path(sys.argv[1]).read_text(errors="ignore").splitlines()
+hdr = re.compile(
+    r'(Standard Nuclear Orientation|Input orientation|Coordinates \(Angstroms\))', re.I
+)
+start = None
+for i in range(len(lines) - 1, -1, -1):
+    if hdr.search(lines[i]):
+        start = i + 3; break
+if start is None:
+    sys.exit(f"qcout2xyz: no coordinate block found in {sys.argv[1]}")
+geom = []
 for l in lines[start:]:
     if not l.strip() or l.lstrip().startswith('-'): break
-    p=l.split()
-    if len(p)>=5: sym,x,y,z=p[1:5]
-    elif len(p)==4: sym,x,y,z=p
+    p = l.split()
+    if len(p) >= 5:   sym, x, y, z = p[1], p[2], p[3], p[4]
+    elif len(p) == 4: sym, x, y, z = p
     else: continue
     geom.append(f"{sym} {x} {y} {z}")
-print(len(geom));print();print("\n".join(geom))
+if not geom:
+    sys.exit(f"qcout2xyz: coordinate parsing failed in {sys.argv[1]}")
+print(len(geom)); print(); print("\n".join(geom))
 PY
 }
 
-# ------------------------------ CLI parser -------------------------------
-parse_cli(){
-  METHOD=$DEFAULT_METHOD; BASIS=$DEFAULT_BASIS; ROOTS=$DEFAULT_ROOTS
-  SOLVENT=$DEFAULT_SOLVENT
-  CPUS=$DEFAULT_CPUS; MEM=$DEFAULT_MEM; PART=$DEFAULT_PART
-  DRY=false; LIST=""; SINGLE=""
-
-  local opts
-  opts=$(getopt -o h --long help,method:,basis:,roots:,solvent:,cpus:,mem-per-cpu:,partition:,list:,dry-run -- "$@")
-  eval set -- "$opts"
-  while true; do
-    case "$1" in
-      --method) METHOD=$2; shift 2;;
-      --basis)  BASIS=$2; shift 2;;
-      --roots)  ROOTS=$2; shift 2;;
-      --solvent) SOLVENT=$2; shift 2;;
-      --cpus)   CPUS=$2; shift 2;;
-      --mem-per-cpu) MEM=$2; shift 2;;
-      --partition) PART=$2; shift 2;;
-      --list) LIST=$2; shift 2;;
-      --dry-run) DRY=true; shift;;
-      -h|--help)
-        cat <<EOF
-Usage:
-  $(basename "$0") MoleculeTag [OPTIONS]
-  $(basename "$0") --list tags.txt [OPTIONS]
-
-Options:
-  --method FUNC        TD-DFT functional            [${DEFAULT_METHOD}]
-  --basis BASIS        Basis set                    [${DEFAULT_BASIS}]
-  --roots N            Number of excited states     [${DEFAULT_ROOTS}]
-  --solvent NAME       Implicit solvent (SMD)       [${DEFAULT_SOLVENT}]
-  --cpus N             CPUs per job                 [${DEFAULT_CPUS}]
-  --mem-per-cpu MB     Memory per CPU (MB)          [${DEFAULT_MEM}]
-  --partition NAME     SLURM partition              [${DEFAULT_PART}]
-  --list FILE          File with molecule tags      (blank/# ignored)
-  --dry-run            Echo actions only
-  -h, --help           Show this help and exit
-EOF
-        exit 0;;
-      --) shift; break;;
-      *) err "Unknown option $1";;
-    esac
-  done
-
-  if [[ -n $LIST ]]; then
-    [[ $# -eq 0 ]] || err "Unexpected positional argument with --list"
-    [[ -f $LIST ]] || err "List file '$LIST' not found"
-  else
-    [[ $# -eq 1 ]] || err "Provide molecule tag when not using --list"
-    SINGLE=$1
-  fi
-
-  command -v sbatch >/dev/null 2>&1 || err 'sbatch command not found in PATH'
+# ============================================================================
+# CHARGE / MULTIPLICITY FROM pre_xyz
+# ============================================================================
+read_charge_mult() {
+    local tag=$1
+    local pxyz="${XYZ_DIR}/${tag}.xyz"
+    charge=0; mult=1
+    [[ -f $pxyz ]] || { warn "pre_xyz/${tag}.xyz not found — using charge=0 mult=1"; return; }
+    local h
+    h=$(sed -n '2p' "$pxyz")
+    [[ $h =~ charge[[:space:]]*=[[:space:]]*([+-]?[0-9]+) ]] && charge=${BASH_REMATCH[1]}
+    if [[ $h =~ mult[[:space:]]*=[[:space:]]*([0-9]+) ]]; then
+        mult=${BASH_REMATCH[1]}
+    elif [[ $h =~ ^[[:space:]]*([+-]?[0-9]+)[[:space:]]+([0-9]+) ]]; then
+        charge=${BASH_REMATCH[1]}; mult=${BASH_REMATCH[2]}
+    fi
 }
 
-# --------------------------- input & slurm writers ------------------------
-write_input(){
-  local TAG=$1 CID=$2 XYZ=$3 OUT=$4
-  local CHARGE=0 MULT=1
-  local PXYZ; PXYZ=$(pre_xyz "$TAG")
-  [[ -f $PXYZ ]] && read -r CHARGE MULT < <(charge_mult "$PXYZ")
+# ============================================================================
+# CLI PARSER
+# ============================================================================
+parse_cli() {
+    method=$DEFAULT_METHOD
+    basis=$DEFAULT_BASIS
+    roots=$DEFAULT_ROOTS
+    solvent=$DEFAULT_SOLVENT
+    max_scf=$DEFAULT_MAX_SCF
+    cpus=$DEFAULT_CPUS
+    mem_mb=$DEFAULT_MEM_PER_CPU
+    partition=${CLUSTER_PARTITION:-$DEFAULT_PARTITION}
+    wall=${CLUSTER_WALL:-$DEFAULT_WALL}
+    qchem_setup=${QCHEM_SETUP:-/shares/chem_hlw/qchem/7.0.0-qmmm-nt-intel-pre/setqc}
+    dry_run=false
+    list_file=""
+    single=""
 
-  cat >"$OUT" <<EOF
+    local opts
+    opts=$(getopt -o hb:m:c: \
+        --long help,method:,basis:,roots:,solvent:,max-scf:,cpus:,mem-per-cpu:,partition:,time:,list:,dry-run \
+        -- "$@") || die "Failed to parse options (try --help)"
+    eval set -- "$opts"
+
+    while true; do
+        case "$1" in
+            -m|--method)    method=$2;      shift 2 ;;
+            -b|--basis)     basis=$2;       shift 2 ;;
+            --roots)        roots=$2;       shift 2 ;;
+            --solvent)      solvent=$2;     shift 2 ;;
+            --max-scf)      max_scf=$2;     shift 2 ;;
+            -c|--cpus)      cpus=$2;        shift 2 ;;
+            --mem-per-cpu)  mem_mb=$2;      shift 2 ;;
+            --partition)    partition=$2;   shift 2 ;;
+            --time)         wall=$2;        shift 2 ;;
+            --list)         list_file=$2;   shift 2 ;;
+            --dry-run)      dry_run=true;   shift ;;
+            -h|--help)      show_help ;;
+            --)             shift; break ;;
+            *)              die "Unknown option '$1'" ;;
+        esac
+    done
+
+    if [[ -n $list_file ]]; then
+        [[ $# -eq 0 ]] || die "Positional arguments not allowed with --list"
+        require_file "$list_file"
+    else
+        [[ $# -eq 1 ]] || die "Provide a molecule TAG"
+        single=$1
+    fi
+
+    command -v sbatch >/dev/null 2>&1 || die "sbatch not in PATH"
+}
+
+# ============================================================================
+# Q-CHEM INPUT WRITER
+# ============================================================================
+write_input() {
+    local tag=$1 cid=$2 xyz=$3 inp=$4
+
+    cat >"$inp" <<EOF
 \$comment
-TD-DFT UV-Vis + ECD (SMD ${SOLVENT}) generated by 6-qchem-tddft.sh
+TD-DFT UV-Vis + ECD (SMD ${solvent}) — generated by 6-qchem-tddft.sh
 \$end
 
 \$molecule
-${CHARGE} ${MULT}
-$(tail -n +3 "$XYZ")
+${charge} ${mult}
+$(tail -n +3 "$xyz")
 \$end
 
 \$rem
   JOB_TYPE            SP
-  METHOD              ${METHOD}
-  BASIS               ${BASIS}
-  CIS_N_ROOTS         ${ROOTS}
+  METHOD              ${method}
+  BASIS               ${basis}
+  CIS_N_ROOTS         ${roots}
   CIS_SINGLETS        TRUE
   CIS_TRIPLETS        FALSE
   RPA                 TRUE
@@ -134,91 +223,152 @@ $(tail -n +3 "$XYZ")
   CIS_MOMENTS         TRUE
   SOLVENT_METHOD      SMD
   SCF_CONVERGENCE     8
-  MAX_SCF_CYCLES      ${DEFAULT_MAX_SCF}
+  MAX_SCF_CYCLES      ${max_scf}
   SYM_IGNORE          TRUE
   XC_GRID             3
 \$end
 EOF
-  if [[ ${SOLVENT,,} != water ]]; then
-    cat >>"$OUT" <<EOF
+
+    if [[ ${solvent,,} != water ]]; then
+        cat >>"$inp" <<EOF
 
 \$smx
-solvent ${SOLVENT}
-StateSpecific
+  solvent ${solvent}
+  StateSpecific
 \$end
 EOF
-  fi
+    fi
 }
 
-write_slurm(){
-  local JOB=$1 INP=$2 OUT=$3 SLM=$4
-  cat >"$SLM" <<EOF
+# ============================================================================
+# SLURM SCRIPT WRITER
+# ============================================================================
+write_slurm() {
+    local slurm_file=$1 cid=$2 workdir=$3
+    local abs_workdir
+    abs_workdir=$(cd "$workdir" && pwd)
+
+    cat >"$slurm_file" <<EOF
 #!/usr/bin/env bash
-#SBATCH --job-name=${JOB}
-#SBATCH --partition=${PART}
+#SBATCH --job-name=${cid}
+#SBATCH --partition=${partition}
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=${CPUS}
-#SBATCH --mem-per-cpu=${MEM}
-#SBATCH --time=${DEFAULT_WALL}
-#SBATCH --output=slurm-%j.out
-#SBATCH --error=slurm-%j.err
+#SBATCH --cpus-per-task=${cpus}
+#SBATCH --mem-per-cpu=${mem_mb}
+#SBATCH --time=${wall}
+#SBATCH --chdir=${abs_workdir}
+#SBATCH --output=${abs_workdir}/slurm-%j.out
+#SBATCH --error=${abs_workdir}/slurm-%j.err
 
 module purge
-source /shares/chem_hlw/qchem/7.0.0-qmmm-nt-intel-pre/setqc
-export QCSCRATCH=/tmp/\$SLURM_JOBID
+source ${qchem_setup}
+export QCSCRATCH=/tmp/\$SLURM_JOB_ID
 
-qchem -nt ${CPUS} $(basename "$INP") $(basename "$OUT")
+qchem -nt ${cpus} ${abs_workdir}/${cid}.inp ${abs_workdir}/${cid}.out
 EOF
-  chmod +x "$SLM"
+    chmod +x "$slurm_file"
 }
 
-# --------------------------- submission pipeline --------------------------
-submit_one(){
-  local TAG=$1 CID=$2 OUTFILE=$3
-  local DIR="${TAG}/tddft/${CID}"; mkdir -p "$DIR"
-
-  local XYZ_TMP; XYZ_TMP=$(mktemp --suffix=.xyz)
-  qcout2xyz "$OUTFILE" > "$XYZ_TMP" || { log "[$TAG] cannot parse $CID"; rm -f "$XYZ_TMP"; return; }
-
-  local INP="$DIR/$CID.inp" OUT="$DIR/$CID.out" SLM="$DIR/$CID.slurm"
-  write_input "$TAG" "$CID" "$XYZ_TMP" "$INP"
-  write_slurm "$CID" "$INP" "$OUT" "$SLM"
-  rm -f "$XYZ_TMP"
-
-  if $DRY; then
-    log "[$TAG] sbatch --chdir=$DIR $(basename "$SLM")"
-  else
-    sbatch --chdir="$DIR" "$(basename "$SLM")"
-  fi
+# ============================================================================
+# SUMMARY BANNER
+# ============================================================================
+print_banner() {
+    cat >&2 <<EOF
+=============================================================
+ Stage 6-tddft: TD-DFT UV-Vis + ECD
+-------------------------------------------------------------
+ Q-Chem setup : ${qchem_setup}
+ Method       : ${method}
+ Basis        : ${basis}
+ Roots        : ${roots}
+ Solvent      : ${solvent} (SMD)
+ Max SCF      : ${max_scf}
+ Cores        : ${cpus}
+ Mem/core     : ${mem_mb} MB
+ Partition    : ${partition}
+ Wall time    : ${wall}
+ Dry run      : ${dry_run}
+=============================================================
+EOF
 }
 
-process_tag(){
-  local TAG=$1
-  local LAB="${TAG}/bw_results/${TAG}_bw_labels.dat"
-  [[ -f $LAB ]] || { log "[$TAG] label list not found"; return; }
-  mapfile -t CIDS < <(grep -v '^[[:space:]]*$' "$LAB")
-  [[ ${#CIDS[@]} -eq 0 ]] && { log "[$TAG] label list empty"; return; }
+# ============================================================================
+# SUBMIT ONE CONFORMER
+# ============================================================================
+submit_one() {
+    local tag=$1 cid=$2 outfile=$3
+    local workdir="${tag}/${OUT_SUBDIR}/${cid}"
+    mkdir -p "$workdir"
 
-  for CID in "${CIDS[@]}"; do
-    local OUTPATH="$TAG/$SOLV_OUT_DIR/$CID/$CID.out"
-    [[ -f $OUTPATH ]] || { log "[$TAG] missing $CID.out"; continue; }
-    submit_one "$TAG" "$CID" "$OUTPATH"
-  done
+    local xyz_tmp
+    xyz_tmp=$(mktemp --suffix=.xyz)
+    qcout2xyz "$outfile" >"$xyz_tmp" || {
+        warn "[${tag}] cannot extract geometry from ${cid}.out"
+        rm -f "$xyz_tmp"; return
+    }
+
+    local inp="${workdir}/${cid}.inp"
+    local slurm_file="${workdir}/${cid}.slurm"
+
+    read_charge_mult "$tag"
+    write_input "$tag" "$cid" "$xyz_tmp" "$inp"
+    write_slurm "$slurm_file" "$cid" "$workdir"
+    rm -f "$xyz_tmp"
+
+    if $dry_run; then
+        log "[${tag}] dry run — ${cid}.inp written"
+    else
+        log "[${tag}] submitting ${cid} (partition=${partition})"
+        sbatch "$slurm_file"
+    fi
 }
 
-handle(){ [[ $1 == *.xyz ]] && process_tag "$(basename "$1" .xyz)" || process_tag "$1"; }
+# ============================================================================
+# PROCESS ONE TAG
+# ============================================================================
+process_tag() {
+    local tag=$1
+    local lab="${tag}/${BW_SUBDIR}/${tag}_bw_labels.dat"
+    if [[ ! -f $lab ]]; then
+        warn "[${tag}] label file not found: ${lab}"
+        return
+    fi
 
-# ------------------------------- main -------------------------------------
-main(){
-  parse_cli "$@"
-  if [[ -n $LIST ]]; then
-    while IFS= read -r TAG || [[ -n $TAG ]]; do
-      [[ -z $TAG || $TAG == \#* ]] && continue
-      handle "$TAG"
-    done < "$LIST"
-  else
-    handle "$SINGLE"
-  fi
+    mapfile -t cids < <(grep -v '^[[:space:]]*$' "$lab")
+    if [[ ${#cids[@]} -eq 0 ]]; then
+        warn "[${tag}] label file is empty"
+        return
+    fi
+
+    log "[${tag}] found ${#cids[@]} conformers in label file"
+    for cid in "${cids[@]}"; do
+        local outpath="${tag}/${SOLV_OUT_DIR}/${cid}/${cid}.out"
+        if [[ ! -f $outpath ]]; then
+            warn "[${tag}] missing ${cid}.out — skipping"
+            continue
+        fi
+        submit_one "$tag" "$cid" "$outpath"
+    done
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+main() {
+    source_cluster_cfg
+    parse_cli "$@"
+    print_banner
+
+    if [[ -n $list_file ]]; then
+        while IFS= read -r entry || [[ -n $entry ]]; do
+            [[ -z $entry || $entry == \#* || $entry == \;* ]] && continue
+            process_tag "$entry"
+        done < "$list_file"
+    else
+        process_tag "$single"
+    fi
+
+    log "Stage 6-tddft complete."
 }
 
 main "$@"
