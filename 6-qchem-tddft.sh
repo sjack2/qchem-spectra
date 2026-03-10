@@ -260,8 +260,8 @@ write_slurm() {
 #SBATCH --output=${abs_workdir}/slurm-%j.out
 #SBATCH --error=${abs_workdir}/slurm-%j.err
 
-module purge
 source ${qchem_setup}
+${CLUSTER_LD_LIBRARY_PATH:+export LD_LIBRARY_PATH=${CLUSTER_LD_LIBRARY_PATH}:\$LD_LIBRARY_PATH}
 export QCSCRATCH=/tmp/\$SLURM_JOB_ID
 
 qchem -nt ${cpus} ${abs_workdir}/${cid}.inp ${abs_workdir}/${cid}.out
