@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# 6-qchem-tddft.sh — TD-DFT UV-Vis + ECD for Boltzmann-kept conformers
+# 6-qchem-tddft.sh — TD-DFT UV-Vis and ECD for Boltzmann-kept conformers
 # ============================================================================
 #
 # OVERVIEW
@@ -9,16 +9,20 @@
 #     2. Writes a TD-DFT single-point Q-Chem input with implicit solvent (SMD),
 #     3. Submits a SLURM job.
 #
-#   Q-Chem 7 automatically prints an ECD spectrum alongside the UV-Vis data
-#   for every TD-DFT calculation.
+#   Each output file contains both UV-Vis (oscillator strengths) and ECD
+#   (rotatory strengths, length and velocity gauge) — Q-Chem prints both
+#   automatically for every TD-DFT calculation.
+#
+#   For high-accuracy ECD requiring EOM-CCSD, use 6-qchem-ecd.sh instead
+#   (note: significantly more expensive).
 #
 # Usage:
 #   6-qchem-tddft.sh TAG
 #   6-qchem-tddft.sh --list mols.txt --method CAM-B3LYP --roots 40 --dry-run
 #
 # Flags:
-#   -m | --method NAME       TD-DFT functional            [B3LYP]
-#   -b | --basis NAME        Basis set                    [6-31+G(d)]
+#   -m | --method NAME       TD-DFT functional            [CAM-B3LYP]
+#   -b | --basis NAME        Basis set                    [def2-SVP]
 #        --roots N           Number of excited states     [30]
 #        --solvent NAME      SMD solvent                  [water]
 #        --max-scf N         Max SCF cycles               [150]
@@ -51,8 +55,8 @@ IFS=$'\n\t'
 # ============================================================================
 # DEFAULTS
 # ============================================================================
-DEFAULT_METHOD="B3LYP"
-DEFAULT_BASIS="6-31+G(d)"
+DEFAULT_METHOD="CAM-B3LYP"
+DEFAULT_BASIS="def2-SVP"
 DEFAULT_ROOTS=30
 DEFAULT_SOLVENT="water"
 DEFAULT_MAX_SCF=150
@@ -219,25 +223,17 @@ $(tail -n +3 "$xyz")
   CIS_SINGLETS        TRUE
   CIS_TRIPLETS        FALSE
   RPA                 TRUE
-  STS_MOM             TRUE
-  CIS_MOMENTS         TRUE
   SOLVENT_METHOD      SMD
   SCF_CONVERGENCE     8
   MAX_SCF_CYCLES      ${max_scf}
   SYM_IGNORE          TRUE
   XC_GRID             3
 \$end
-EOF
-
-    if [[ ${solvent,,} != water ]]; then
-        cat >>"$inp" <<EOF
 
 \$smx
   solvent ${solvent}
-  StateSpecific
 \$end
 EOF
-    fi
 }
 
 # ============================================================================
@@ -275,7 +271,7 @@ EOF
 print_banner() {
     cat >&2 <<EOF
 =============================================================
- Stage 6-tddft: TD-DFT UV-Vis + ECD
+ Stage 6: TD-DFT UV-Vis + ECD
 -------------------------------------------------------------
  Q-Chem setup : ${qchem_setup}
  Method       : ${method}
