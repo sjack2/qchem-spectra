@@ -1,34 +1,37 @@
 #!/usr/bin/env python3
 # ============================================================================
-# or_ecd_uvvis_tools.py - Parse ORCA TD‑DFT log files and build
-# Boltzmann‑weighted, Gaussian‑broadened UV/Vis and ECD spectra.
+# qc_ecd_uvvis_tools.py - Parse Q-Chem TD-DFT .out files and build
+# Boltzmann-weighted, Gaussian-broadened UV/Vis and ECD spectra.
 #
 # OVERVIEW
-#   1. Collects *.log files (positional patterns, wild‑cards, or directories),
-#   2. Extracts stick data from “ABSORPTION” and “CD” spectrum blocks,
-#   3. Applies optional Boltzmann weights (5‑orca‑boltzmann‑weight output),
+#   1. Collects *.out files (positional patterns, wild-cards, or directories),
+#   2. Extracts stick data from the full "TDDFT Excitation Energies" block
+#      (not the TDA pre-step) and the "Electronic Circular Dichroism (ECD)
+#      Spectrum" table,
+#   3. Applies optional Boltzmann weights (stage-5 output),
 #   4. Writes CSV tables and plots broadened spectra (PNG + PDF).
 #
 # Quick examples
-#   # simple: average of logs in the current folder
-#   or_ecd_uvvis_tools.py *.log
+#   # simple: average of outputs in the current folder
+#   qc_ecd_uvvis_tools.py *.out
 #
-#   # recurse through folders, supply Boltzmann weights, 0.35 eV Gaussian FWHM
-#   or_ecd_uvvis_tools.py --bw aspirin/bw_results/aspirin_energies.dat \
-#       --uv_fwhm 0.35 --ecd_fwhm 0.25 ./aspirin/**
+#   # recurse through folders, supply Boltzmann weights, 0.35 eV Gaussian FWHM
+#   qc_ecd_uvvis_tools.py --bw aspirin/04_boltzmann/aspirin_energies.dat \
+#       --uv_fwhm 0.35 --ecd_fwhm 0.25 ./aspirin/05_tddft/**
 #
-#   # publish‑quality plot with sticks and custom limits
-#   or_ecd_uvvis_tools.py *.log --stick --xlim 190 350 --uv_ylim 0 0.05 \
+#   # publish-quality plot with sticks and custom limits
+#   qc_ecd_uvvis_tools.py *.out --stick --xlim 190 350 --uv_ylim 0 0.05 \
 #       --ecd_ylim -2 2 --prefix aspirin_spectra
 #
 # Flags (see --help for full list)
-#   --bw PATH          Boltzmann weight file (stage‑5 output, energies.dat)
+#   --bw PATH          Boltzmann weight file (stage-5 output, energies.dat)
 #   --prefix STR       Prefix for all outputs              [spectra]
 #   --uv_fwhm EV       Gaussian FWHM for UV/Vis (eV)       [0.35]
 #   --ecd_fwhm EV      Gaussian FWHM for ECD   (eV)        [0.25]
 #   --stick            Overlay stick spectrum
 #   --flip_x           Plot lambda increasing left -> right
 #   --scale FACTOR     Multiply intensities after weighting [1.0]
+#   --ecd_gauge STR    ECD rotatory strength: length|velocity [length]
 #
 # ============================================================================
 
@@ -39,7 +42,7 @@ import glob
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -52,114 +55,143 @@ import pandas as pd
 HC_OVER_EV_NM = 1239.84193  # Planck·c in eV·nm
 SQRT2PI = np.sqrt(2.0 * np.pi)
 
-_BLOCK_HEADER_RE = re.compile(
-    r"^(ABSORPTION|CD) SPECTRUM VIA TRANSITION (ELECTRIC|VELOCITY) DIPOLE MOMENTS"
+# Matches the full-TDDFT header line (NOT "TDDFT/TDA Excitation Energies")
+_TDDFT_HEADER_RE = re.compile(r"^\s*TDDFT Excitation Energies\s*$")
+
+# Per-state line patterns inside the TDDFT block
+_STATE_RE = re.compile(
+    r"Excited state\s+\d+:\s+excitation energy \(eV\)\s*=\s*([+-]?\d+\.\d+)"
 )
+_MULT_RE = re.compile(r"Multiplicity:\s*(\w+)")
+_STRENGTH_RE = re.compile(
+    r"Strength\s*:\s*([+-]?\d+\.\d+(?:[eEdD][+-]?\d+)?)"
+)
+
+_ECD_HEADER = "Electronic Circular Dichroism (ECD) Spectrum"
 
 # ---------------------------------------------------------------------- #
 #                           PARSING UTILITIES                            #
 # ---------------------------------------------------------------------- #
 
 
-def _canonical_tokens(tokens: Sequence[str]) -> List[str]:
-    """Remove leading 'X -> Y' so numeric columns line up."""
-    return tokens[3:] if len(tokens) > 2 and tokens[1] == "->" else list(tokens)
-
-
-def _safe_float(s: str) -> Optional[float]:
-    """Return float value; accept FORTRAN 'D' exponents."""
-    try:
-        return float(s.replace("D", "E"))
-    except ValueError:
-        return None
-
-
-def parse_orca_log(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def parse_qchem_out(
+    path: str, *, ecd_gauge: str = "length"
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Extract stick data from a single ORCA TD‑DFT log.
+    Extract stick UV/Vis and ECD data from a Q-Chem TD-DFT .out file.
+
+    UV-Vis intensities are oscillator strengths from the *full* TDDFT block
+    (the last "TDDFT Excitation Energies" section; Q-Chem prints a TDA
+    pre-step first which is intentionally skipped).
+
+    ECD rotatory strengths are taken from the tabular
+    "Electronic Circular Dichroism (ECD) Spectrum" section.
+
+    Parameters
+    ----------
+    path : str
+        Path to the Q-Chem .out file.
+    ecd_gauge : str
+        'length'   → use R(length)   column  (default, more reliable)
+        'velocity' → use R(velocity) column
 
     Returns
     -------
-    uv_df : DataFrame
-        Columns: energy_eV, wavelength_nm, intensity
-    ecd_df : DataFrame
-        Same as uv_df but intensity is rotatory strength (R)
+    uv_df : DataFrame with columns energy_eV, wavelength_nm, intensity
+    ecd_df : DataFrame with columns energy_eV, wavelength_nm, intensity
     """
+    gauge_col = 8 if ecd_gauge == "length" else 9
+
     with open(path, encoding="utf-8", errors="ignore") as fh:
         lines = fh.readlines()
+    n = len(lines)
 
+    # ------------------------------------------------------------------ #
+    #  Step 1: locate the last "TDDFT Excitation Energies" block start    #
+    #          and the ECD table start (used as an upper bound).          #
+    # ------------------------------------------------------------------ #
+    last_tddft_start: Optional[int] = None
+    ecd_line: Optional[int] = None
+
+    for i, line in enumerate(lines):
+        if _TDDFT_HEADER_RE.match(line):
+            last_tddft_start = i
+        if ecd_line is None and _ECD_HEADER in line:
+            ecd_line = i
+
+    # ------------------------------------------------------------------ #
+    #  Step 2: parse UV-Vis (oscillator strengths) from the TDDFT block   #
+    # ------------------------------------------------------------------ #
     uv_rows: List[Dict[str, float]] = []
+
+    if last_tddft_start is not None:
+        # Stop at the ECD table (or end of file) so we don't pick up stray
+        # "Strength" lines from other sections.
+        parse_end = ecd_line if ecd_line is not None else n
+        cur_energy: Optional[float] = None
+        cur_singlet = False
+
+        for i in range(last_tddft_start + 1, parse_end):
+            line = lines[i]
+
+            m = _STATE_RE.search(line)
+            if m:
+                cur_energy = float(m.group(1))
+                cur_singlet = False
+                continue
+
+            mm = _MULT_RE.search(line)
+            if mm:
+                cur_singlet = mm.group(1).lower() == "singlet"
+                continue
+
+            ms = _STRENGTH_RE.search(line)
+            if ms and cur_energy is not None and cur_singlet:
+                fosc = float(ms.group(1).replace("D", "E").replace("d", "e"))
+                wl = HC_OVER_EV_NM / cur_energy
+                uv_rows.append(
+                    {"energy_eV": cur_energy, "wavelength_nm": wl, "intensity": fosc}
+                )
+                cur_energy = None
+                cur_singlet = False
+
+    # ------------------------------------------------------------------ #
+    #  Step 3: parse ECD rotatory strengths from the tabular section      #
+    #                                                                      #
+    #  Table layout (5 header lines before data):                         #
+    #    ECD Spectrum header line                                          #
+    #    ----  (dashes)                                                    #
+    #    State  Energy  PX  PY  PZ  MX  MY  MZ  R(len)  R(vel)           #
+    #    (eV)   ...                                                        #
+    #    ----  (dashes)                                                    #
+    #    data rows ...                                                     #
+    #    ----  (closing dashes)                                            #
+    # ------------------------------------------------------------------ #
     ecd_rows: List[Dict[str, float]] = []
 
-    i = 0
-    n_lines = len(lines)
-    while i < n_lines:
-        if not _BLOCK_HEADER_RE.match(lines[i].lstrip()):
-            i += 1
-            continue
-
-        is_uv = lines[i].lstrip().startswith("ABSORPTION")
-        block: List[str] = []
-        j = i + 1
-        while j < n_lines and not _BLOCK_HEADER_RE.match(lines[j].lstrip()):
-            block.append(lines[j])
-            j += 1
-
-        try:
-            unit_idx = next(idx for idx, l in enumerate(block) if "(nm)" in l)
-        except StopIteration:
-            i = j
-            continue
-
-        hdr_tokens = block[unit_idx - 1].split()
-        unit_tokens = block[unit_idx].split()
-
-        # ORCA ≤5 used "(eV)" energy and "X -> Y" state notation;
-        # _canonical_tokens strips those 3 tokens so column indices need
-        # no offset.  ORCA 6 uses "(cm-1)" and a bare state index, which
-        # is NOT stripped, shifting every data column right by +1.
-        if "(eV)" in unit_tokens:
-            col_offset = 0
-        elif "(cm-1)" in unit_tokens:
-            col_offset = 1
-        else:
-            i = j
-            continue
-
-        wl_col = unit_tokens.index("(nm)") + col_offset
-
-        if is_uv:
-            inten_token = next(
-                (t for t in ("fosc(D2)", "fosc(P2)", "fosc") if t in hdr_tokens),
-                None,
-            )
-        else:
-            inten_token = "R" if "R" in hdr_tokens else None
-
-        if inten_token is None:
-            i = j
-            continue
-
-        inten_col = hdr_tokens.index(inten_token) - 1 + col_offset
-
-        for raw in block[unit_idx + 1 :]:
-            if not raw.strip() or raw.lstrip().startswith("-"):
+    if ecd_line is not None:
+        data_start = ecd_line + 5  # skip 5 header lines
+        for i in range(data_start, n):
+            raw = lines[i].strip()
+            if not raw or raw.startswith("-"):
+                break  # closing separator or blank → end of table
+            toks = raw.split()
+            if len(toks) <= gauge_col:
                 continue
-            toks = _canonical_tokens(raw.split())
-            if len(toks) <= max(wl_col, inten_col):
+            try:
+                e = float(toks[1])
+                r = float(toks[gauge_col])
+            except (ValueError, IndexError):
                 continue
-            w = _safe_float(toks[wl_col])
-            inten = _safe_float(toks[inten_col])
-            if None in (w, inten):
-                continue
-            e = HC_OVER_EV_NM / w  # derive energy from wavelength; avoids cm-1/eV ambiguity
-            (uv_rows if is_uv else ecd_rows).append(
-                {"energy_eV": e, "wavelength_nm": w, "intensity": inten}
+            wl = HC_OVER_EV_NM / e
+            ecd_rows.append(
+                {"energy_eV": e, "wavelength_nm": wl, "intensity": r}
             )
 
-        i = j
-
-    return pd.DataFrame(uv_rows), pd.DataFrame(ecd_rows)
+    _cols = ["energy_eV", "wavelength_nm", "intensity"]
+    uv = pd.DataFrame(uv_rows, columns=_cols) if uv_rows else pd.DataFrame(columns=_cols)
+    ecd = pd.DataFrame(ecd_rows, columns=_cols) if ecd_rows else pd.DataFrame(columns=_cols)
+    return uv, ecd
 
 
 # ---------------------------------------------------------------------- #
@@ -184,12 +216,11 @@ def broaden(
     Return broadened curve on the supplied λ grid.
 
     Each Gaussian is normalised with 1/(σ√(2π)) so its peak equals the stick
-    intensity.  If *jacobian* is True (ECD), multiply by |dE/dλ| = E/λ so area
-    is preserved after change of variable.
+    intensity.  If *jacobian* is True (ECD), multiply by |dE/dλ| = E/λ so
+    area is preserved after the change of variable.
     """
     if sigma_eV <= 0:
         raise ValueError("σ must be positive.")
-
     curve = np.zeros_like(lam_nm, dtype=float)
     prefactor = 1.0 / (sigma_eV * SQRT2PI)
     for e, inten in zip(df["energy_eV"], df["intensity"]):
@@ -272,7 +303,6 @@ def _make_plot(
 
     if y_limits:
         ax.set_ylim(*y_limits)
-
     if title:
         ax.set_title(title, fontsize=10)
 
@@ -288,7 +318,7 @@ def _make_plot(
 
 
 def _load_weights(path: str) -> Dict[str, float]:
-    """Read 5-orca-boltzmann-weight energies.dat; return {CID: p}."""
+    """Read stage-5 energies.dat; return {CID: Boltzmann_probability}."""
     df = pd.read_csv(
         path,
         comment="#",
@@ -307,14 +337,14 @@ def _load_weights(path: str) -> Dict[str, float]:
 
 def _cli() -> None:
     parser = argparse.ArgumentParser(
-        prog="or_ecd_uvvis_tools.py",
-        description="Parse ORCA TD-DFT logs and generate UV/Vis & ECD spectra.",
+        prog="qc_ecd_uvvis_tools.py",
+        description="Parse Q-Chem TD-DFT .out files and generate UV/Vis & ECD spectra.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "logs",
         nargs="+",
-        help="ORCA .log files, glob patterns, or directories (recursive).",
+        help="Q-Chem .out files, glob patterns, or directories (recursive).",
     )
     parser.add_argument("--bw", dest="bw_file", metavar="PATH", help="Boltzmann weight file")
     parser.add_argument(
@@ -329,7 +359,7 @@ def _cli() -> None:
     parser.add_argument(
         "--flip_x",
         action="store_true",
-        help="Plot long → short wavelength (e.g. 350 → 190 nm)",
+        help="Plot short → long wavelength (e.g. 190 → 400 nm)",
     )
     parser.add_argument(
         "--scale",
@@ -338,7 +368,13 @@ def _cli() -> None:
         metavar="FAC",
         help="Multiply intensities after Boltzmann weighting",
     )
-    parser.add_argument("--uv_fwhm", type=float, default=0.35, help="UV‑Vis Gaussian FWHM / eV")
+    parser.add_argument(
+        "--ecd_gauge",
+        choices=["length", "velocity"],
+        default="length",
+        help="ECD rotatory strength gauge to use",
+    )
+    parser.add_argument("--uv_fwhm", type=float, default=0.35, help="UV-Vis Gaussian FWHM / eV")
     parser.add_argument("--ecd_fwhm", type=float, default=0.25, help="ECD Gaussian FWHM / eV")
     parser.add_argument(
         "--xlim",
@@ -352,7 +388,7 @@ def _cli() -> None:
     args = parser.parse_args()
 
     # ------------------------------------------------------------------ #
-    #   Resolve output prefix (--outdir takes effect if --prefix absent) #
+    #   Resolve output prefix                                             #
     # ------------------------------------------------------------------ #
     if args.prefix is None:
         if args.outdir:
@@ -366,23 +402,23 @@ def _cli() -> None:
         prefix = args.prefix
 
     # ------------------------------------------------------------------ #
-    #   Locate .log files                                                #
+    #   Locate .out files                                                 #
     # ------------------------------------------------------------------ #
     log_files: List[str] = []
     for token in args.logs:
         if os.path.isdir(token):
-            log_files.extend(glob.glob(os.path.join(token, "**", "*.log"), recursive=True))
+            log_files.extend(
+                glob.glob(os.path.join(token, "**", "*.out"), recursive=True)
+            )
         else:
             log_files.extend(glob.glob(token))
     if not log_files:
-        raise SystemExit("No .log files found.")
+        raise SystemExit("No .out files found.")
 
     # ------------------------------------------------------------------ #
-    #   Boltzmann weights                                                #
+    #   Boltzmann weights                                                 #
     # ------------------------------------------------------------------ #
-    weights: Dict[str, float] = {
-        Path(f).stem: 1.0 for f in log_files
-    }
+    weights: Dict[str, float] = {Path(f).stem: 1.0 for f in log_files}
     if args.bw_file:
         bw_map = _load_weights(args.bw_file)
         for cid in weights:
@@ -390,15 +426,24 @@ def _cli() -> None:
                 weights[cid] = bw_map[cid]
 
     # ------------------------------------------------------------------ #
-    #   Aggregate all transitions                                        #
+    #   Aggregate all transitions                                         #
     # ------------------------------------------------------------------ #
     uv_all, ecd_all = [], []
     for f in log_files:
-        uv_df, ecd_df = parse_orca_log(f)
+        uv_df, ecd_df = parse_qchem_out(f, ecd_gauge=args.ecd_gauge)
         cid = Path(f).stem
         weight = weights.get(cid, 1.0) * args.scale
-        uv_df["intensity"] *= weight
-        ecd_df["intensity"] *= weight
+        print(
+            f"  {cid}: {len(uv_df)} UV transitions, {len(ecd_df)} ECD transitions"
+        )
+        if "intensity" not in uv_df.columns:
+            print(f"    [WARNING] UV DataFrame missing 'intensity'; columns: {list(uv_df.columns)}")
+        else:
+            uv_df["intensity"] *= weight
+        if "intensity" not in ecd_df.columns:
+            print(f"    [WARNING] ECD DataFrame missing 'intensity'; columns: {list(ecd_df.columns)}")
+        else:
+            ecd_df["intensity"] *= weight
         uv_all.append(uv_df)
         ecd_all.append(ecd_df)
 
@@ -409,7 +454,7 @@ def _cli() -> None:
     ecd_df.to_csv(f"{prefix}_ecd.csv", index=False)
 
     lam_min, lam_max = (160.0, 400.0) if not args.xlim else sorted(args.xlim)
-    fwhm_to_sigma = lambda f: f / (2 * np.sqrt(2 * np.log(2)))
+    fwhm_to_sigma = lambda f: f / (2.0 * np.sqrt(2.0 * np.log(2.0)))
     sigma_uv = fwhm_to_sigma(args.uv_fwhm)
     sigma_ecd = fwhm_to_sigma(args.ecd_fwhm)
     title = None if args.no_title else Path(prefix).name.replace("_", " ")
@@ -445,8 +490,9 @@ def _cli() -> None:
     )
 
     print(
-        f"{len(log_files)} log(s) → {len(uv_df)} UV and {len(ecd_df)} ECD transitions "
-        f"(σ_uv={sigma_uv:.3f} eV, σ_ecd={sigma_ecd:.3f} eV, scale={args.scale})"
+        f"{len(log_files)} file(s) → {len(uv_df)} UV and {len(ecd_df)} ECD transitions "
+        f"(σ_uv={sigma_uv:.3f} eV, σ_ecd={sigma_ecd:.3f} eV, "
+        f"gauge={args.ecd_gauge}, scale={args.scale})"
     )
 
 
