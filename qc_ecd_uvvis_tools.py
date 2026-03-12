@@ -52,7 +52,7 @@ import pandas as pd
 #                               CONSTANTS                                #
 # ---------------------------------------------------------------------- #
 
-HC_OVER_EV_NM = 1239.84193  # Planck·c in eV·nm
+HC_OVER_EV_NM = 1239.84193  # Planck*c in eV*nm
 SQRT2PI = np.sqrt(2.0 * np.pi)
 
 # Matches the full-TDDFT header line (NOT "TDDFT/TDA Excitation Energies")
@@ -92,8 +92,8 @@ def parse_qchem_out(
     path : str
         Path to the Q-Chem .out file.
     ecd_gauge : str
-        'length'   → use R(length)   column  (default, more reliable)
-        'velocity' → use R(velocity) column
+        'length'   --> use R(length)   column  (default, more reliable)
+        'velocity' --> use R(velocity) column
 
     Returns
     -------
@@ -174,7 +174,7 @@ def parse_qchem_out(
         for i in range(data_start, n):
             raw = lines[i].strip()
             if not raw or raw.startswith("-"):
-                break  # closing separator or blank → end of table
+                break  # closing separator or blank -- end of table
             toks = raw.split()
             if len(toks) <= gauge_col:
                 continue
@@ -213,14 +213,14 @@ def broaden(
     jacobian: bool,
 ) -> np.ndarray:
     """
-    Return broadened curve on the supplied λ grid.
+    Return broadened curve on the supplied lambda grid.
 
-    Each Gaussian is normalised with 1/(σ√(2π)) so its peak equals the stick
-    intensity.  If *jacobian* is True (ECD), multiply by |dE/dλ| = E/λ so
-    area is preserved after the change of variable.
+    Each Gaussian is normalized with 1/(sigma*sqrt(2*pi)) so its peak equals
+    the stick intensity. If *jacobian* is True (ECD), multiply by
+    |dE/dlambda| = E/lambda so area is preserved after the change of variable.
     """
     if sigma_eV <= 0:
-        raise ValueError("σ must be positive.")
+        raise ValueError("sigma must be positive.")
     curve = np.zeros_like(lam_nm, dtype=float)
     prefactor = 1.0 / (sigma_eV * SQRT2PI)
     for e, inten in zip(df["energy_eV"], df["intensity"]):
@@ -359,7 +359,7 @@ def _cli() -> None:
     parser.add_argument(
         "--flip_x",
         action="store_true",
-        help="Plot short → long wavelength (e.g. 190 → 400 nm)",
+        help="Plot short -> long wavelength (e.g. 190 -> 400 nm)",
     )
     parser.add_argument(
         "--scale",
@@ -490,8 +490,8 @@ def _cli() -> None:
     )
 
     print(
-        f"{len(log_files)} file(s) → {len(uv_df)} UV and {len(ecd_df)} ECD transitions "
-        f"(σ_uv={sigma_uv:.3f} eV, σ_ecd={sigma_ecd:.3f} eV, "
+        f"{len(log_files)} file(s) -> {len(uv_df)} UV and {len(ecd_df)} ECD transitions "
+        f"(sigma_uv={sigma_uv:.3f} eV, sigma_ecd={sigma_ecd:.3f} eV, "
         f"gauge={args.ecd_gauge}, scale={args.scale})"
     )
 

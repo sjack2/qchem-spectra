@@ -1,49 +1,64 @@
 # =============================================================================
-# cluster.cfg — Site-specific configuration for qchem-spectra workflow
+# cluster.cfg.example — site-specific configuration for qchem-spectra
 # =============================================================================
+#
 # Copy this file to cluster.cfg and fill in the values for your cluster.
-# cluster.cfg is sourced automatically by each script at startup; CLI flags
-# always override values set here.
 #
-# Supported variables (all optional):
-#   QCHEM_SETUP             — path to the Q-Chem setup script (sets QC, QCAUX, PATH)
-#   CLUSTER_PARTITION       — default SLURM partition name
-#   CLUSTER_WALL            — default SLURM wall-clock limit (HH:MM:SS)
-#                             Note: each script has its own stage-appropriate default;
-#                             set this only if you want a global override.
-#   CLUSTER_LD_LIBRARY_PATH — colon-separated list of extra library directories
-#                             prepended to LD_LIBRARY_PATH in each SLURM job.
-#                             Required when the Q-Chem installation depends on
-#                             libraries not present in the compute node's default
-#                             environment. What you need here depends on how
-#                             Q-Chem was compiled:
+#   cp cluster.cfg.example cluster.cfg
 #
-#                             Intel-compiled Q-Chem (most common):
-#                               Needs libiomp5.so (Intel OpenMP runtime) and a
-#                               libstdc++.so.6 new enough to match the GCC used
-#                               during compilation. Add both the Intel compiler
-#                               lib dir and a sufficiently new GCC lib64 dir.
-#                               Example:
-#                                 CLUSTER_LD_LIBRARY_PATH=\
-#                                   /path/to/intel/compiler/lib:\
-#                                   /path/to/gcc-X.Y.Z/lib64
+# cluster.cfg is gitignored (site-specific paths should not be committed).
+# cluster.cfg.example is committed to the repo as a template.
 #
-#                             GCC-compiled Q-Chem:
-#                               Only needs a compatible libstdc++.so.6 if the
-#                               compute nodes run an older OS than the build host.
-#                               Example:
-#                                 CLUSTER_LD_LIBRARY_PATH=/path/to/gcc-X.Y.Z/lib64
+# All variables are optional. Unset variables fall back to built-in defaults
+# or can be overridden at run time with explicit CLI flags.
+# CLI flag > cluster.cfg > built-in default.
 #
-#                             Leave unset if the compute nodes already have all
-#                             required libraries in their default environment.
 # =============================================================================
 
-# Full path to the Q-Chem setup script for your installation
-QCHEM_SETUP=/path/to/qchem/setqc
+# Full path to the Q-Chem setup script (typically called "setqc" or
+# "qchem.setup"). Sourcing this script sets QC, QCAUX, PATH, and any
+# other environment variables Q-Chem needs at runtime.
+# Equivalent to passing --qchem-setup on every invocation.
+#
+# Example:
+#   QCHEM_SETUP=/shares/chem_hlw/qchem/qchem_6.2/setqc
+#
+QCHEM_SETUP=
 
-# SLURM defaults
+# Default SLURM partition for job submission.
+# Equivalent to passing --partition on every invocation.
+#
+# USF CIRCE:   general
+# Other sites: gpu, short, compute, ...
+#
 CLUSTER_PARTITION=general
-# CLUSTER_WALL=04:00:00    # uncomment to override per-script defaults
 
-# Extra library paths needed by the Q-Chem executable (see notes above)
-# CLUSTER_LD_LIBRARY_PATH=/path/to/intel/compiler/lib:/path/to/gcc-X.Y.Z/lib64
+# Default SLURM wall-clock time limit (HH:MM:SS).
+# Equivalent to passing --time on every invocation.
+# Each script has its own stage-appropriate default; set this only if you
+# want a single global override.
+#
+CLUSTER_WALL=06:00:00
+
+# Extra library directories prepended to LD_LIBRARY_PATH in each SLURM job.
+# Q-Chem uses shared-memory (OpenMP) parallelism, so no MPI installation is
+# needed. However, CLUSTER_LD_LIBRARY_PATH may still be required depending
+# on how Q-Chem was compiled:
+#
+#   Intel-compiled Q-Chem (most common):
+#     Needs libiomp5.so (Intel OpenMP runtime) and a libstdc++.so.6 new
+#     enough to match the GCC used during compilation. Add both the Intel
+#     compiler lib directory and a sufficiently new GCC lib64 directory.
+#     Example:
+#       CLUSTER_LD_LIBRARY_PATH=/path/to/intel/compiler/lib:/path/to/gcc-X.Y.Z/lib64
+#
+#   GCC-compiled Q-Chem:
+#     Only needs a compatible libstdc++.so.6 if the compute nodes run an
+#     older OS than the build host.
+#     Example:
+#       CLUSTER_LD_LIBRARY_PATH=/path/to/gcc-X.Y.Z/lib64
+#
+# Leave unset if the compute nodes already have all required libraries in
+# their default environment.
+#
+CLUSTER_LD_LIBRARY_PATH=

@@ -12,7 +12,7 @@
 #
 # Q-Chem output parsing
 #   The script reads the VIBRATIONAL ANALYSIS section produced by
-#   JOB_TYPE FREQ with VCD TRUE.  Modes are reported in blocks of N columns:
+#   JOB_TYPE FREQ with VCD TRUE. Modes are reported in blocks of N columns:
 #
 #     Mode:            1      2      3  ...
 #     Frequency:    XXX.X  XXX.X  XXX.X
@@ -152,7 +152,7 @@ def parse_qchem_vib(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
         nonlocal freqs, ir_activ, rot_len, rot_vel, rot_any
         if not freqs:
             return
-        # Prefer length gauge; fall back to velocity; fall back to unlabelled
+        # Prefer length gauge; fall back to velocity; fall back to unlabeled
         rot = rot_len if rot_len else rot_vel if rot_vel else rot_any
         for k, freq in enumerate(freqs):
             if freq <= 0.0:  # skip imaginary and translation/rotation (~0)
@@ -192,19 +192,19 @@ def parse_qchem_vib(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
             ir_activ = _parse_floats(m.group(1))
             continue
 
-        # VCD rotatory strength — length gauge
+        # VCD rotatory strength -- length gauge
         m = _ROT_L_RE.match(line)
         if m:
             rot_len = _parse_floats(m.group(1))
             continue
 
-        # VCD rotatory strength — velocity gauge
+        # VCD rotatory strength -- velocity gauge
         m = _ROT_V_RE.match(line)
         if m:
             rot_vel = _parse_floats(m.group(1))
             continue
 
-        # VCD rotatory strength — unlabelled (single gauge)
+        # VCD rotatory strength -- unlabeled (single gauge)
         # Only match if neither length nor velocity gauge seen yet
         if not rot_len and not rot_vel:
             m = _ROT_ANY_RE.match(line)
@@ -243,11 +243,11 @@ def broaden(df: pd.DataFrame, *, sigma: float, nu_grid: np.ndarray) -> np.ndarra
     """
     Convolve stick spectrum with a Gaussian of width *sigma* (cm-1).
 
-    The Gaussians are normalised by 1/(σ√2π) so peak height equals stick
+    The Gaussians are normalized by 1/(sigma*sqrt(2*pi)) so peak height equals stick
     intensity.
     """
     if sigma <= 0:
-        raise ValueError("σ must be positive.")
+        raise ValueError("sigma must be positive.")
     curve = np.zeros_like(nu_grid, dtype=float)
     pref = 1.0 / (sigma * SQRT2PI)
     for nu0, inten in zip(df["nu_cm"], df["intensity"]):
@@ -358,7 +358,7 @@ def _cli() -> None:
         nargs=2,
         metavar=("MIN", "MAX"),
         type=float,
-        help="ν range / cm-1",
+        help="nu range / cm-1",
     )
     parser.add_argument("--ir_ylim", nargs=2, type=float, metavar=("YMIN", "YMAX"))
     parser.add_argument("--vcd_ylim", nargs=2, type=float, metavar=("YMIN", "YMAX"))
@@ -458,8 +458,8 @@ def _cli() -> None:
     )
 
     print(
-        f"{len(log_files)} file(s) → {len(ir_df)} IR and {len(vcd_df)} VCD transitions "
-        f"(σ_ir={sigma_ir:.1f} cm⁻¹, σ_vcd={sigma_vcd:.1f} cm⁻¹)"
+        f"{len(log_files)} file(s) -> {len(ir_df)} IR and {len(vcd_df)} VCD transitions "
+        f"(sigma_ir={sigma_ir:.1f} cm-1, sigma_vcd={sigma_vcd:.1f} cm-1)"
     )
 
 

@@ -1,32 +1,51 @@
 #!/usr/bin/env bash
 # ============================================================================
-# 2-qchem-conf-search.sh — Conformer ensemble generation (Stage 2)
+# 2-qchem-conf-search.sh -- Conformer enumeration with Open Babel Confab
 # ============================================================================
 #
 # OVERVIEW
-#   Extracts the optimised geometry from the Stage 1 Q-Chem output, converts
-#   it to SDF, and runs Open Babel's Confab to generate a conformer ensemble.
+#   Stage 2 of the Q-Chem workflow. For each molecule it:
+#     1. Retrieves the optimized geometry from the Stage 1 Q-Chem output,
+#     2. Extracts coordinates to XYZ format using an embedded Python script,
+#     3. Converts that geometry to SDF format,
+#     4. Runs Open Babel Confab to generate conformers within an energy window.
+#
+#   Q-Chem does not write a standalone .xyz file, so the geometry must be
+#   extracted from the .out file. The embedded Python extractor searches
+#   for the last "Standard Nuclear Orientation" block and parses it into
+#   standard XYZ format.
+#
+#   Confab operates by systematically rotating torsion angles and evaluating
+#   each resulting geometry with a force field. Structures above the energy
+#   cutoff are discarded. For rigid molecules Confab may return only a single
+#   conformer; for flexible molecules it can return hundreds.
 #
 # Usage:
 #   2-qchem-conf-search.sh TAG
-#   2-qchem-conf-search.sh --list molecules.txt --conf 500 --ecut 3
+#   2-qchem-conf-search.sh path/to/foo.xyz --conf 500
+#   2-qchem-conf-search.sh --list molecules.txt --ecut 4 --dry-run
 #
 # Flags:
-#   --conf N       Max conformers to generate             [1000]
-#   --ecut KCAL    Energy cutoff above minimum (kcal/mol)  [5]
-#   --list FILE    File of TAGs or XYZ paths
-#   --dry-run      Echo commands without running
+#   --conf N       Maximum number of conformers              [1000]
+#   --ecut E       Energy cutoff in kcal/mol                 [5]
+#   --list FILE    Text file of TAGs or XYZ paths
+#   --dry-run      Echo commands without executing them
 #   -h | --help    Show this help and exit
 #
-# Directory layout:
+# Directory layout (reads from Stage 1, writes to):
 #   <TAG>/
-#   ├── 01_gas_opt/<TAG>.out         ← Stage 1 output (input here)
-#   └── 02_conf_search/
-#       ├── <TAG>.xyz                extracted optimised geometry
-#       ├── <TAG>.sdf                single-conformer SDF
-#       └── <TAG>_combined.sdf       all conformers  → Stage 3 input
+#   |-- 01_gas_opt/
+#   |   -- <TAG>.out              <- input (from Stage 1)
+#   -- 02_conf_search/
+#       |-- <TAG>.xyz              extracted optimized geometry
+#       |-- <TAG>.sdf              SDF conversion
+#       -- <TAG>_combined.sdf     all conformers in one file (run Stage 3 to split)
 #
 # Dependencies: obabel (Open Babel >= 3.1), python3
+#
+# Examples:
+#   2-qchem-conf-search.sh --ecut 10 --conf 500 ephedrine
+#   2-qchem-conf-search.sh --list molecules.txt --dry-run
 #
 # ============================================================================
 
@@ -38,9 +57,7 @@ IFS=$'\n\t'
 # ============================================================================
 DEFAULT_CONF_COUNT=1000
 DEFAULT_ECUT_KCAL=5
-
-GAS_OPT_SUBDIR="01_gas_opt"
-CONF_SUBDIR="02_conf_search"
+XYZ_DIR="pre_xyz"
 
 # ============================================================================
 # CLUSTER CONFIG (sourced for consistency; no SLURM used in this stage)
@@ -59,9 +76,10 @@ source_cluster_cfg() {
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-die()          { printf 'Error: %s\n' "$*" >&2; exit 1; }
-log()          { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2; }
-warn()         { printf '[%s] Warning: %s\n' "$(date '+%F %T')" "$*" >&2; }
+die()  { printf 'Error: %s\n' "$*" >&2; exit 1; }
+log()  { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2; }
+warn() { printf '[%s] Warning: %s\n' "$(date '+%F %T')" "$*" >&2; }
+
 require_file() { [[ -f $1 ]] || die "File '$1' not found"; }
 
 show_help() {
@@ -70,14 +88,16 @@ show_help() {
 }
 
 # ============================================================================
-# Q-CHEM OUTPUT → XYZ EXTRACTOR
-# Written to a temp file once and reused across all molecules in a batch run.
+# Q-CHEM OUTPUT -> XYZ EXTRACTOR
 # ============================================================================
+# Creates a temporary Python script that extracts the last optimized
+# geometry from a Q-Chem .out file. Written once and reused across all
+# molecules in a batch run.
 make_qxyz_py() {
     QXYZ_PY=$(mktemp)
     cat >"$QXYZ_PY" <<'PY'
 #!/usr/bin/env python3
-"""Extract the last optimised geometry from a Q-Chem output file."""
+"""Extract the last optimized geometry from a Q-Chem output file."""
 import sys, re, pathlib
 
 if len(sys.argv) != 2:
@@ -126,104 +146,173 @@ PY
 # ============================================================================
 parse_cli() {
     conf_count=$DEFAULT_CONF_COUNT
-    ecut=$DEFAULT_ECUT_KCAL
+    ecut_kcal=$DEFAULT_ECUT_KCAL
     dry_run=false
     list_file=""
     positional=()
 
     local opts
-    opts=$(getopt -o h --long help,conf:,ecut:,list:,dry-run \
-        -- "$@") || die "Failed to parse options (try --help)"
+    opts=$(getopt -o h --long help,list:,conf:,ecut:,dry-run -- "$@") \
+        || die "Failed to parse options (try --help)"
     eval set -- "$opts"
 
     while true; do
-        case "$1" in
-            --conf)     conf_count=$2; shift 2 ;;
-            --ecut)     ecut=$2;       shift 2 ;;
-            --list)     list_file=$2;  shift 2 ;;
-            --dry-run)  dry_run=true;  shift ;;
-            -h|--help)  show_help ;;
-            --)         shift; break ;;
-            *)          die "Unknown option '$1'" ;;
+        case $1 in
+            --list)    list_file=$2; shift 2 ;;
+            --conf)    conf_count=$2; shift 2 ;;
+            --ecut)    ecut_kcal=$2; shift 2 ;;
+            --dry-run) dry_run=true; shift ;;
+            -h|--help) show_help ;;
+            --)        shift; break ;;
+            *)         die "Unknown option '$1'" ;;
         esac
     done
     positional+=("$@")
 
     if [[ -n $list_file ]]; then
-        [[ ${#positional[@]} -eq 0 ]] || die "Positional args not allowed with --list"
+        [[ ${#positional[@]} -eq 0 ]] || die "Positional args invalid with --list"
         require_file "$list_file"
     else
-        [[ ${#positional[@]} -ge 1 ]] || die "Provide at least one TAG or XYZ path"
+        [[ ${#positional[@]} -gt 0 ]] || die "Provide at least one TAG or XYZ path"
     fi
 
-    command -v obabel  >/dev/null 2>&1 || die "obabel not in PATH"
-    command -v python3 >/dev/null 2>&1 || die "python3 not in PATH"
+    command -v obabel >/dev/null 2>&1 || die "obabel not found in PATH"
+    command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
 }
 
 # ============================================================================
-# HELPERS
+# PATH RESOLUTION
 # ============================================================================
-find_qchem_out() {
+# Look for the Q-Chem .out from Stage 1 in the expected location.
+find_optimized_out() {
     local tag=$1
-    local f="${tag}/${GAS_OPT_SUBDIR}/${tag}.out"
-    [[ -f $f ]] && { printf '%s' "$f"; return; }
-    printf ''
-}
-
-confab_run() {
-    local tag=$1 xyz=$2 sdf=$3 combined=$4
-
-    if $dry_run; then
-        log "[${tag}] obabel -ixyz ${xyz} -osdf -O ${sdf}"
+    local probe="${tag}/01_gas_opt/${tag}.out"
+    if [[ -f $probe ]]; then
+        printf '%s' "$probe"
     else
-        obabel -ixyz "$xyz" -osdf -O "$sdf"
+        printf ''
     fi
-    [[ -s $sdf ]] || { warn "[${tag}] SDF empty after conversion — skipping Confab"; return; }
-
-    local args=(--confab --original -xC --conf "$conf_count" --ecutoff "$ecut" --errorlevel 1)
-    if $dry_run; then
-        log "[${tag}] obabel ${sdf} -O ${combined} ${args[*]}"
-    else
-        obabel "$sdf" -O "$combined" "${args[@]}"
-    fi
-    [[ -s $combined ]] || warn "[${tag}] Confab produced no output"
 }
 
 # ============================================================================
-# PER-MOLECULE PROCESSING
+# CORE: CONFAB CONFORMER GENERATION
 # ============================================================================
 process_tag() {
     local tag=$1
+
+    # locate the Stage 1 Q-Chem output
     local qcout
-    qcout=$(find_qchem_out "$tag")
+    qcout=$(find_optimized_out "$tag")
     if [[ -z $qcout ]]; then
-        warn "[${tag}] Stage 1 output not found (${tag}/${GAS_OPT_SUBDIR}/${tag}.out) — skipping"
+        warn "[${tag}] Stage 1 output not found (${tag}/01_gas_opt/${tag}.out) -- skipping"
         return
     fi
 
-    local out_dir="${tag}/${CONF_SUBDIR}"
+    local out_dir="${tag}/02_conf_search"
     mkdir -p "$out_dir"
 
-    local xyz="${out_dir}/${tag}.xyz"
-    if ! "$QXYZ_PY" "$qcout" >"$xyz"; then
+    # extract optimized geometry from Q-Chem output
+    local xyz_copy="${out_dir}/${tag}.xyz"
+    if ! python3 "$QXYZ_PY" "$qcout" >"$xyz_copy"; then
         warn "[${tag}] geometry extraction failed from ${qcout}"
         return
     fi
 
-    confab_run "$tag" "$xyz" "${out_dir}/${tag}.sdf" "${out_dir}/${tag}_combined.sdf"
-    log "[${tag}] conformer search complete → ${out_dir}/${tag}_combined.sdf"
+    local sdf="${out_dir}/${tag}.sdf"
+    local combined="${out_dir}/${tag}_combined.sdf"
+
+    if $dry_run; then
+        log "[${tag}] (dry run) python3 qxyz.py ${qcout} > ${xyz_copy}"
+        log "[${tag}] (dry run) obabel -ixyz ${xyz_copy} -osdf -O ${sdf}"
+        log "[${tag}] (dry run) obabel ${sdf} -O ${combined} --confab --original --conf ${conf_count} --ecutoff ${ecut_kcal}"
+        log "[${tag}] (dry run) run Stage 3 to split conformers"
+        return
+    fi
+
+    # convert XYZ -> SDF (Confab requires SDF input)
+    log "[${tag}] converting to SDF"
+    obabel -ixyz "$xyz_copy" -osdf -O "$sdf" 2>/dev/null
+    if [[ ! -s $sdf ]]; then
+        warn "[${tag}] SDF conversion produced empty file -- skipping"
+        return
+    fi
+
+    # run Confab
+    log "[${tag}] running Confab (ecutoff=${ecut_kcal} kcal/mol, max=${conf_count})"
+    obabel "$sdf" -O "$combined" \
+        --confab --original --conf "$conf_count" --ecutoff "$ecut_kcal" 2>/dev/null
+
+    if [[ ! -s $combined ]]; then
+        warn "[${tag}] Confab produced no conformers"
+        return
+    fi
+
+    local count
+    count=$(grep -c '^\$\$\$\$' "$combined" 2>/dev/null || echo 0)
+    log "[${tag}] Confab generated ${count} conformer(s) -> ${combined} (run Stage 3 to split)"
 }
 
+# ============================================================================
+# PROCESS A USER-SUPPLIED XYZ (bypasses Stage 1 extraction)
+# ============================================================================
 process_xyz() {
     local xyz_path=$1
-    local stem
-    stem=$(basename "${xyz_path%.xyz}")
-    local out_dir="${stem}/${CONF_SUBDIR}"
+    local tag
+    tag=$(basename "$xyz_path" .xyz)
+
+    local out_dir="${tag}/02_conf_search"
     mkdir -p "$out_dir"
-    cp "$xyz_path" "${out_dir}/${stem}.xyz"
-    confab_run "$stem" "${out_dir}/${stem}.xyz" \
-        "${out_dir}/${stem}.sdf" "${out_dir}/${stem}_combined.sdf"
-    log "[${stem}] conformer search complete → ${out_dir}/${stem}_combined.sdf"
+
+    # copy the user-supplied XYZ into the conformer directory
+    local xyz_copy="${out_dir}/${tag}.xyz"
+    cp -f "$xyz_path" "$xyz_copy"
+
+    local sdf="${out_dir}/${tag}.sdf"
+    local combined="${out_dir}/${tag}_combined.sdf"
+
+    if $dry_run; then
+        log "[${tag}] (dry run) obabel -ixyz ${xyz_copy} -osdf -O ${sdf}"
+        log "[${tag}] (dry run) obabel ${sdf} -O ${combined} --confab --original --conf ${conf_count} --ecutoff ${ecut_kcal}"
+        log "[${tag}] (dry run) run Stage 3 to split conformers"
+        return
+    fi
+
+    # convert XYZ -> SDF (Confab requires SDF input)
+    log "[${tag}] converting to SDF"
+    obabel -ixyz "$xyz_copy" -osdf -O "$sdf" 2>/dev/null
+    if [[ ! -s $sdf ]]; then
+        warn "[${tag}] SDF conversion produced empty file -- skipping"
+        return
+    fi
+
+    # run Confab
+    log "[${tag}] running Confab (ecutoff=${ecut_kcal} kcal/mol, max=${conf_count})"
+    obabel "$sdf" -O "$combined" \
+        --confab --original --conf "$conf_count" --ecutoff "$ecut_kcal" 2>/dev/null
+
+    if [[ ! -s $combined ]]; then
+        warn "[${tag}] Confab produced no conformers"
+        return
+    fi
+
+    local count
+    count=$(grep -c '^\$\$\$\$' "$combined" 2>/dev/null || echo 0)
+    log "[${tag}] Confab generated ${count} conformer(s) -> ${combined} (run Stage 3 to split)"
+}
+
+# ============================================================================
+# SUMMARY BANNER
+# ============================================================================
+print_banner() {
+    cat >&2 <<EOF
+=============================================================
+ Stage 2: Conformer Generation (Confab)
+-------------------------------------------------------------
+ Energy cutoff : ${ecut_kcal} kcal/mol
+ Max conformers: ${conf_count}
+ Dry run       : ${dry_run}
+=============================================================
+EOF
 }
 
 # ============================================================================
@@ -233,6 +322,7 @@ main() {
     source_cluster_cfg
     parse_cli "$@"
     make_qxyz_py
+    print_banner
 
     local entries=()
     if [[ -n $list_file ]]; then
@@ -243,6 +333,7 @@ main() {
 
     for entry in "${entries[@]}"; do
         if [[ $entry == *.xyz ]]; then
+            require_file "$entry"
             process_xyz "$entry"
         else
             process_tag "$entry"
@@ -250,7 +341,7 @@ main() {
     done
 
     rm -f "$QXYZ_PY"
-    $dry_run && log "Dry run complete — no files created" || log "Stage 2 complete."
+    log "Stage 2 complete."
 }
 
 main "$@"
