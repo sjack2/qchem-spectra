@@ -231,9 +231,14 @@ def broaden(
     return curve
 
 
-def _stick_spectrum(ax, df: pd.DataFrame, *, is_ecd: bool, scale: float):
-    """Draw vertical lines representing individual transitions."""
+def _stick_spectrum(
+    ax, df: pd.DataFrame, *, is_ecd: bool, scale: float, lam_min: float, lam_max: float
+):
+    """Draw vertical lines representing individual transitions (clipped to plot range)."""
+    lo, hi = min(lam_min, lam_max), max(lam_min, lam_max)
     for _, row in df.iterrows():
+        if not (lo <= row["wavelength_nm"] <= hi):
+            continue
         color = (
             "royalblue"
             if is_ecd and row["intensity"] >= 0
@@ -287,7 +292,7 @@ def _make_plot(
     ax.plot(lam_nm, curve, color="black", lw=1.1)
 
     if sticks:
-        _stick_spectrum(ax, df, is_ecd=is_ecd, scale=scale)
+        _stick_spectrum(ax, df, is_ecd=is_ecd, scale=scale, lam_min=lam_min, lam_max=lam_max)
 
     if is_ecd:
         ax.axhline(0, color="grey", lw=0.8)
@@ -400,9 +405,10 @@ def _cli() -> None:
             prefix = "spectra"
     else:
         prefix = args.prefix
+        Path(prefix).parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ #
-    #   Locate .out files                                                 #
+    #   Locate .out files (skip SLURM log files)                         #
     # ------------------------------------------------------------------ #
     log_files: List[str] = []
     for token in args.logs:
@@ -412,6 +418,8 @@ def _cli() -> None:
             )
         else:
             log_files.extend(glob.glob(token))
+    # Drop SLURM output files (slurm-XXXXXXXX.out) — not Q-Chem outputs
+    log_files = [f for f in log_files if not Path(f).stem.startswith("slurm-")]
     if not log_files:
         raise SystemExit("No .out files found.")
 
@@ -447,8 +455,13 @@ def _cli() -> None:
         uv_all.append(uv_df)
         ecd_all.append(ecd_df)
 
-    uv_df = pd.concat(uv_all, ignore_index=True)
-    ecd_df = pd.concat(ecd_all, ignore_index=True)
+    _out_cols = ["energy_eV", "wavelength_nm", "intensity"]
+    _uv_valid = [df for df in uv_all if not df.empty]
+    _ecd_valid = [df for df in ecd_all if not df.empty]
+    uv_df = (pd.concat(_uv_valid, ignore_index=True)
+             if _uv_valid else pd.DataFrame(columns=_out_cols))
+    ecd_df = (pd.concat(_ecd_valid, ignore_index=True)
+              if _ecd_valid else pd.DataFrame(columns=_out_cols))
 
     uv_df.to_csv(f"{prefix}_uvvis.csv", index=False)
     ecd_df.to_csv(f"{prefix}_ecd.csv", index=False)
