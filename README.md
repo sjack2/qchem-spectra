@@ -489,7 +489,9 @@ The `--basis` flag accepts any Q-Chem basis set keyword. Q-Chem does not require
 
 The `--solvent` flag accepts Q-Chem solvent keywords for the SMD implicit solvation model. Solvent parameters are passed via the `$smx` input block. Common options:
 
-`water`, `methanol`, `ethanol`, `acetone`, `acetonitrile`, `ch2cl2`, `chcl3`, `benzene`, `toluene`, `hexane`, `cyclohexane`, `dmso`, `dmf`, `thf`, `pyridine`, `diethylether`
+`water`, `methanol`, `ethanol`, `acetone`, `acetonitrile`, `dichloromethane`, `trichloromethane`, `benzene`, `toluene`, `hexane`, `cyclohexane`, `dimethylsulfoxide`, `dimethylformamide`, `tetrahydrofuran`, `pyridine`, `diethylether`
+
+**Note:** Q-Chem solvent keywords use full names with no spaces or hyphens (e.g., `1hexanol` not `1-hexanol`, `propanoicacid` not `propanoic acid`). See the SMx table in the Q-Chem manual for the complete list of 179 built-in solvents.
 
 ### Dispersion Corrections
 
