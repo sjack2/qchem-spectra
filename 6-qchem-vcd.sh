@@ -7,7 +7,7 @@
 #   For every conformer that passed the Boltzmann filter (Stage 5), this
 #   script builds a Q-Chem frequency input requesting VCD and Raman with
 #   implicit solvent (SMD) and either runs it locally or submits a SLURM
-#   job.
+#   job array.
 #
 #   The resulting outputs contain IR absorption intensities and VCD
 #   rotatory strengths for all normal modes. Post-process with
@@ -29,6 +29,7 @@
 #        --max-scf N           Max SCF cycles                    [150]
 #   -c | --cpus N              CPU cores                         [12]
 #        --mem-per-cpu MB      Memory per core in MB             [2048]
+#        --max-running N       Max simultaneous SLURM array tasks [10]
 #        --qchem-setup PATH    Path to Q-Chem setup script       [auto]
 #        --list FILE           File of molecule TAGs
 #        --local               Run Q-Chem directly (no SLURM)
@@ -50,10 +51,11 @@
 #   |-- 03_solvent_opt/<CID>/<CID>.out      <- Stage 4 geometry source
 #   |-- 04_boltzmann/<TAG>_bw_labels.dat    <- conformer list (from Stage 5)
 #   -- 05_vcd/
+#       |-- <TAG>_conf_list.txt          (SLURM mode: list of working dirs)
+#       |-- <TAG>_array.slurm            (SLURM mode: array job script)
 #       |-- <CID>/
 #       |   |-- <CID>.inp                Q-Chem FREQ+VCD input
-#       |   |-- <CID>.out                Q-Chem output
-#       |   -- <CID>.slurm             (HPC mode only)
+#       |   -- <CID>.out                Q-Chem output
 #       -- ...
 #
 # Post-processing:
@@ -86,6 +88,7 @@ DEFAULT_CPUS=12
 DEFAULT_MEM_PER_CPU=2048
 DEFAULT_PARTITION="general"
 DEFAULT_WALL="06:00:00"
+DEFAULT_MAX_RUNNING=10
 
 XYZ_DIR="pre_xyz"
 SOLV_OUT_DIR="03_solvent_opt"
@@ -204,6 +207,7 @@ parse_cli() {
     mem_mb=$DEFAULT_MEM_PER_CPU
     partition=${CLUSTER_PARTITION:-$DEFAULT_PARTITION}
     wall=${CLUSTER_WALL:-$DEFAULT_WALL}
+    max_running=${CLUSTER_MAX_RUNNING:-$DEFAULT_MAX_RUNNING}
     dry_run=false
     force_local=false
     list_file=""
@@ -213,7 +217,7 @@ parse_cli() {
     local opts
     opts=$(getopt -o hb:m:c: \
         --long help,method:,basis:,solvent:,max-scf:,cpus:,\
-mem-per-cpu:,partition:,time:,list:,qchem-setup:,local,dry-run -- "$@") \
+mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
 
@@ -225,6 +229,7 @@ mem-per-cpu:,partition:,time:,list:,qchem-setup:,local,dry-run -- "$@") \
             --max-scf)        max_scf=$2;            shift 2 ;;
             -c|--cpus)        cpus=$2;               shift 2 ;;
             --mem-per-cpu)    mem_mb=$2;             shift 2 ;;
+            --max-running)    max_running=$2;        shift 2 ;;
             --partition)      partition=$2;          shift 2 ;;
             --time)           wall=$2;               shift 2 ;;
             --list)           list_file=$2;          shift 2 ;;
@@ -292,37 +297,41 @@ EOF
 }
 
 # ============================================================================
-# SLURM WRITER
+# SLURM ARRAY WRITER
 # ============================================================================
-write_slurm() {
-    local cid=$1 inp_file=$2 slurm_file=$3 workdir=$4
-    local abs_workdir
-    abs_workdir=$(cd "$workdir" && pwd)
+write_array_slurm() {
+    local tag=$1 conf_list=$2 slurm_file=$3 n=$4
+    local abs_list out_dir
+    abs_list=$(cd "$(dirname "$conf_list")" && pwd)/$(basename "$conf_list")
+    out_dir=$(dirname "$abs_list")
 
     cat >"$slurm_file" <<EOF
 #!/usr/bin/env bash
-#SBATCH --job-name=vcd_${cid}
+#SBATCH --job-name=vcd_${tag}
 #SBATCH --partition=${partition}
+#SBATCH --array=1-${n}%${max_running}
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=${cpus}
 #SBATCH --mem-per-cpu=${mem_mb}
 #SBATCH --time=${wall}
-#SBATCH --chdir=${abs_workdir}
-#SBATCH --output=${abs_workdir}/slurm-%j.out
-#SBATCH --error=${abs_workdir}/slurm-%j.err
+#SBATCH --output=${out_dir}/slurm-%A_%a.out
+#SBATCH --error=${out_dir}/slurm-%A_%a.err
 
 # ---- Q-Chem environment ----
-source ${qchem_setup}
+${qchem_setup:+source ${qchem_setup}}
 ${CLUSTER_LD_LIBRARY_PATH:+export LD_LIBRARY_PATH=${CLUSTER_LD_LIBRARY_PATH}:\$LD_LIBRARY_PATH}
 export QCSCRATCH=/tmp/\$SLURM_JOB_ID
 
-qchem -nt ${cpus} ${abs_workdir}/${cid}.inp ${abs_workdir}/${cid}.out
+WORKDIR=\$(sed -n "\${SLURM_ARRAY_TASK_ID}p" "${abs_list}")
+CID=\$(basename "\$WORKDIR")
+cd "\$WORKDIR"
+qchem -nt ${cpus} "\${CID}.inp" "\${CID}.out"
 EOF
     chmod +x "$slurm_file"
 }
 
 # ============================================================================
-# PROCESS ONE CONFORMER
+# PROCESS ONE CONFORMER (local mode only)
 # ============================================================================
 process_conformer() {
     local tag=$1 cid=$2 outfile=$3
@@ -349,23 +358,16 @@ process_conformer() {
         return
     fi
 
-    if [[ $exec_mode == slurm ]]; then
-        local slurm_file="${dir}/${cid}.slurm"
-        write_slurm "$cid" "$inp_file" "$slurm_file" "$dir"
-        log "  [${cid}] submitting (partition=${partition})"
-        (cd "$dir" && sbatch "$(basename "$slurm_file")")
+    log "  [${cid}] running FREQ (VCD, solvent=${solvent})"
+    if [[ -n $qchem_setup ]]; then
+        # shellcheck source=/dev/null
+        source "$qchem_setup"
+    fi
+    qchem -nt "$cpus" "$inp_file" "$log_file" 2>&1
+    if grep -q "VIBRATIONAL ANALYSIS\|Mode:" "$log_file" 2>/dev/null; then
+        log "  [${cid}] frequency calculation completed successfully"
     else
-        log "  [${cid}] running FREQ (VCD, solvent=${solvent})"
-        if [[ -n $qchem_setup ]]; then
-            # shellcheck source=/dev/null
-            source "$qchem_setup"
-        fi
-        qchem -nt "$cpus" "$inp_file" "$log_file" 2>&1
-        if grep -q "VIBRATIONAL ANALYSIS\|Mode:" "$log_file" 2>/dev/null; then
-            log "  [${cid}] frequency calculation completed successfully"
-        else
-            warn "  [${cid}] expected output blocks not found -- check ${log_file}"
-        fi
+        warn "  [${cid}] expected output blocks not found -- check ${log_file}"
     fi
 }
 
@@ -401,18 +403,77 @@ process_tag() {
 
     log "[${tag}] ${#cids[@]} conformers to process (charge=${charge}, mult=${mult})"
 
+    # ---- local mode: run each conformer directly -------------------------
+    if [[ $exec_mode != slurm ]]; then
+        for cid in "${cids[@]}"; do
+            cid=$(echo "$cid" | xargs)
+            [[ -z $cid ]] && continue
+            local outpath="${tag}/${SOLV_OUT_DIR}/${cid}/${cid}.out"
+            if [[ ! -f $outpath ]]; then
+                warn "  [${cid}] solvent optimization output not found -- skipping"
+                continue
+            fi
+            process_conformer "$tag" "$cid" "$outpath"
+        done
+        return
+    fi
+
+    # ---- SLURM mode: write all inputs, then submit one array job --------
+    local out_dir="${tag}/${OUT_SUBDIR}"
+    mkdir -p "$out_dir"
+
+    local conf_dirs=()
+    local cid outpath dir xyz_tmp inp_file abs_dir
     for cid in "${cids[@]}"; do
-        cid=$(echo "$cid" | xargs)  # trim whitespace
+        cid=$(echo "$cid" | xargs)
         [[ -z $cid ]] && continue
 
-        # look for the Stage 4 output file
-        local outpath="${tag}/${SOLV_OUT_DIR}/${cid}/${cid}.out"
+        outpath="${tag}/${SOLV_OUT_DIR}/${cid}/${cid}.out"
         if [[ ! -f $outpath ]]; then
             warn "  [${cid}] solvent optimization output not found -- skipping"
             continue
         fi
-        process_conformer "$tag" "$cid" "$outpath"
+
+        dir="${tag}/${OUT_SUBDIR}/${cid}"
+        mkdir -p "$dir"
+
+        xyz_tmp=$(mktemp --suffix=.xyz)
+        if ! qcout2xyz "$outpath" >"$xyz_tmp" 2>/dev/null; then
+            warn "  [${cid}] cannot extract geometry from ${outpath} -- skipping"
+            rm -f "$xyz_tmp"
+            continue
+        fi
+
+        inp_file="${dir}/${cid}.inp"
+        write_qchem_input "$cid" "$xyz_tmp" "$inp_file"
+        rm -f "$xyz_tmp"
+
+        if $dry_run; then
+            log "  [${cid}] dry run -- input written to ${inp_file}"
+            continue
+        fi
+
+        abs_dir=$(cd "$dir" && pwd)
+        conf_dirs+=("$abs_dir")
     done
+
+    $dry_run && return
+
+    local n=${#conf_dirs[@]}
+    if (( n == 0 )); then
+        warn "[${tag}] no valid conformer inputs written -- nothing to submit"
+        return
+    fi
+
+    local conf_list="${out_dir}/${tag}_conf_list.txt"
+    printf '%s\n' "${conf_dirs[@]}" >"$conf_list"
+
+    local array_slurm="${out_dir}/${tag}_array.slurm"
+    write_array_slurm "$tag" "$conf_list" "$array_slurm" "$n"
+
+    local jid
+    jid=$(sbatch --parsable "$array_slurm")
+    log "[${tag}] submitted array job ${jid} (${n} conformers, max ${max_running} concurrent)"
 }
 
 # ============================================================================
@@ -431,6 +492,7 @@ print_banner() {
  Max SCF      : ${max_scf}
  Cores        : ${cpus}
  Mem/core     : ${mem_mb} MB
+ Max running  : ${max_running} (SLURM array throttle)
  Dry run      : ${dry_run}
 =============================================================
 EOF

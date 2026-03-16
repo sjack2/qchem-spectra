@@ -7,7 +7,7 @@
 #   For every conformer produced by Stage 3 (or 3b), this script:
 #     1. Reads charge/multiplicity from the original XYZ in pre_xyz/,
 #     2. Writes a Q-Chem input with implicit solvent (SMD),
-#     3. Either runs Q-Chem directly (--local) or submits a SLURM job.
+#     3. Either runs Q-Chem directly (--local) or submits a SLURM job array.
 #
 #   Each conformer is optimized independently. In local mode the
 #   conformers are processed sequentially (this can take a while for
@@ -35,6 +35,7 @@
 #   SLURM-only flags (ignored in --local mode):
 #        --partition NAME      SLURM partition                  [general]
 #        --time HH:MM:SS       Wall-clock limit                 [02:00:00]
+#        --max-running N       Max concurrent array tasks       [10]
 #
 # Cluster configuration (cluster.cfg):
 #   Create a file named cluster.cfg in the same directory as this script
@@ -51,10 +52,11 @@
 #   <TAG>/
 #   |-- 02_conf_search/split_xyz/     <- input conformers (from Stage 3/3b)
 #   |-- 03_solvent_opt/
+#   |   |-- <TAG>_conf_list.txt       conformer working-dir list (array input)
+#   |   |-- <TAG>_array.slurm         SLURM array job script (HPC mode)
 #   |   |-- <TAG>_001/               one directory per conformer
 #   |   |   |-- <TAG>_001.inp
 #   |   |   |-- <TAG>_001.out        Q-Chem output (after job completes)
-#   |   |   -- <TAG>_001.slurm      (HPC mode only)
 #   |   -- <TAG>_002/
 #   |       -- ...
 #   -- pre_xyz/<TAG>.xyz            must exist for charge/mult
@@ -63,8 +65,11 @@
 #   # Local: optimize all conformers of ephedrine in water
 #   4-qchem-solvent-opt.sh --local --cpus 4 --solvent water ephedrine
 #
-#   # HPC: submit all conformers to SLURM
-#   4-qchem-solvent-opt.sh --solvent acetonitrile --partition gpu aspirin
+#   # HPC: submit all conformers as a throttled job array (10 at a time)
+#   4-qchem-solvent-opt.sh --solvent acetonitrile --partition general aspirin
+#
+#   # HPC: tighter concurrency for a large CREST ensemble
+#   4-qchem-solvent-opt.sh --max-running 5 ephedrine
 #
 #   # Dry run: see how many conformers would be processed
 #   4-qchem-solvent-opt.sh --dry-run --local --list molecules.txt
@@ -86,6 +91,7 @@ DEFAULT_CPUS=12
 DEFAULT_MEM_PER_CPU=2048
 DEFAULT_PARTITION="general"
 DEFAULT_WALL="02:00:00"
+DEFAULT_MAX_RUNNING=10
 
 XYZ_DIR="pre_xyz"
 CONF_SUBDIR="02_conf_search/split_xyz"
@@ -192,6 +198,7 @@ parse_cli() {
     mem_mb=$DEFAULT_MEM_PER_CPU
     partition=${CLUSTER_PARTITION:-$DEFAULT_PARTITION}
     wall=${CLUSTER_WALL:-$DEFAULT_WALL}
+    max_running=${CLUSTER_MAX_RUNNING:-$DEFAULT_MAX_RUNNING}
     dry_run=false
     force_local=false
     list_file=""
@@ -201,7 +208,7 @@ parse_cli() {
     local opts
     opts=$(getopt -o hb:m:c: \
         --long help,basis:,method:,disp:,solvent:,max-scf:,cpus:,\
-mem-per-cpu:,partition:,time:,list:,qchem-setup:,local,dry-run -- "$@") \
+mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
 
@@ -216,6 +223,7 @@ mem-per-cpu:,partition:,time:,list:,qchem-setup:,local,dry-run -- "$@") \
             --mem-per-cpu)    mem_mb=$2;            shift 2 ;;
             --partition)      partition=$2;          shift 2 ;;
             --time)           wall=$2;              shift 2 ;;
+            --max-running)    max_running=$2;       shift 2 ;;
             --list)           list_file=$2;         shift 2 ;;
             --qchem-setup)    qchem_setup_flag=$2;  shift 2 ;;
             --local)          force_local=true;     shift ;;
@@ -273,36 +281,41 @@ EOF
 }
 
 # ============================================================================
-# SLURM WRITER
+# SLURM ARRAY JOB WRITER
 # ============================================================================
-write_slurm() {
-    local cid=$1 slurm_file=$2 workdir=$3
-    local abs_workdir
-    abs_workdir=$(cd "$workdir" && pwd)
+write_array_slurm() {
+    local tag=$1 conf_list=$2 slurm_file=$3 n=$4
+    local abs_list out_dir
+    abs_list=$(cd "$(dirname "$conf_list")" && pwd)/$(basename "$conf_list")
+    out_dir=$(dirname "$abs_list")
 
     cat >"$slurm_file" <<EOF
 #!/usr/bin/env bash
-#SBATCH --job-name=solv_${cid}
+#SBATCH --job-name=solv_${tag}
 #SBATCH --partition=${partition}
+#SBATCH --array=1-${n}%${max_running}
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=${cpus}
 #SBATCH --mem-per-cpu=${mem_mb}
 #SBATCH --time=${wall}
-#SBATCH --chdir=${abs_workdir}
-#SBATCH --output=${abs_workdir}/slurm-%j.out
-#SBATCH --error=${abs_workdir}/slurm-%j.err
+#SBATCH --output=${out_dir}/slurm-%A_%a.out
+#SBATCH --error=${out_dir}/slurm-%A_%a.err
 
+# ---- Q-Chem environment ----
 source ${qchem_setup}
 ${CLUSTER_LD_LIBRARY_PATH:+export LD_LIBRARY_PATH=${CLUSTER_LD_LIBRARY_PATH}:\$LD_LIBRARY_PATH}
 export QCSCRATCH=/tmp/\$SLURM_JOB_ID
 
-qchem -nt ${cpus} ${abs_workdir}/${cid}.inp ${abs_workdir}/${cid}.out
+WORKDIR=\$(sed -n "\${SLURM_ARRAY_TASK_ID}p" "${abs_list}")
+CID=\$(basename "\$WORKDIR")
+cd "\$WORKDIR"
+qchem -nt ${cpus} "\${CID}.inp" "\${CID}.out"
 EOF
     chmod +x "$slurm_file"
 }
 
 # ============================================================================
-# PROCESS ONE CONFORMER
+# PROCESS ONE CONFORMER  (local mode only)
 # ============================================================================
 process_conformer() {
     local tag=$1 cid=$2 xyz_file=$3
@@ -319,23 +332,17 @@ process_conformer() {
         return
     fi
 
-    if [[ $exec_mode == slurm ]]; then
-        local slurm_file="${dir}/${cid}.slurm"
-        write_slurm "$cid" "$slurm_file" "$dir"
-        (cd "$dir" && sbatch "$(basename "$slurm_file")")
+    log "  [${cid}] running Q-Chem (solvent=${solvent})"
+    local out_file="${dir}/${cid}.out"
+    if [[ -n $qchem_setup ]]; then
+        # shellcheck source=/dev/null
+        source "$qchem_setup"
+    fi
+    qchem -nt "$cpus" "$inp_file" "$out_file" 2>&1
+    if grep -q "OPTIMIZATION CONVERGED\|Have a nice day" "$out_file" 2>/dev/null; then
+        log "  [${cid}] converged"
     else
-        log "  [${cid}] running Q-Chem (solvent=${solvent})"
-        local out_file="${dir}/${cid}.out"
-        if [[ -n $qchem_setup ]]; then
-            # shellcheck source=/dev/null
-            source "$qchem_setup"
-        fi
-        qchem -nt "$cpus" "$inp_file" "$out_file" 2>&1
-        if grep -q "OPTIMIZATION CONVERGED\|Have a nice day" "$out_file" 2>/dev/null; then
-            log "  [${cid}] converged"
-        else
-            warn "  [${cid}] convergence not confirmed -- check ${out_file}"
-        fi
+        warn "  [${cid}] convergence not confirmed -- check ${out_file}"
     fi
 }
 
@@ -373,11 +380,42 @@ process_tag() {
 
     log "[${tag}] found ${n} conformers (charge=${charge}, mult=${mult})"
 
-    for xyz in "${xyz_files[@]}"; do
-        local cid
-        cid=$(basename "$xyz" .xyz)
-        process_conformer "$tag" "$cid" "$xyz"
-    done
+    if [[ $exec_mode == slurm ]]; then
+        # Phase 1: write all Q-Chem inputs, collect absolute working dirs
+        local out_dir="${tag}/03_solvent_opt"
+        mkdir -p "$out_dir"
+        local conf_dirs=()
+        for xyz in "${xyz_files[@]}"; do
+            local cid
+            cid=$(basename "$xyz" .xyz)
+            local dir="${tag}/03_solvent_opt/${cid}"
+            mkdir -p "$dir"
+            write_qchem_input "$cid" "$xyz" "${dir}/${cid}.inp"
+            if $dry_run; then
+                log "  [${cid}] dry run -- input written to ${dir}/${cid}.inp"
+            else
+                conf_dirs+=("$(cd "$dir" && pwd)")
+            fi
+        done
+
+        $dry_run && return
+
+        # Phase 2: write conformer list, submit single throttled array job
+        local conf_list="${out_dir}/${tag}_conf_list.txt"
+        printf '%s\n' "${conf_dirs[@]}" > "$conf_list"
+
+        local array_slurm="${out_dir}/${tag}_array.slurm"
+        write_array_slurm "$tag" "$conf_list" "$array_slurm" "$n"
+        local jid
+        jid=$(sbatch --parsable "$array_slurm")
+        log "[${tag}] submitted array job ${jid} (${n} conformers, max ${max_running} concurrent)"
+    else
+        for xyz in "${xyz_files[@]}"; do
+            local cid
+            cid=$(basename "$xyz" .xyz)
+            process_conformer "$tag" "$cid" "$xyz"
+        done
+    fi
 }
 
 # ============================================================================
@@ -399,6 +437,7 @@ print_banner() {
  SCF MaxIter : ${max_scf}
  Cores       : ${cpus}
  Mem/core    : ${mem_mb} MB
+ Max running : ${max_running} (SLURM array throttle)
  Dry run     : ${dry_run}
 =============================================================
 EOF

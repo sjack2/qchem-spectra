@@ -12,7 +12,7 @@ A modular Bash/Python workflow for computing UV-Vis absorption, electronic circu
 
 - **Six-stage pipeline** from raw XYZ geometry to publication-quality broadened spectra, with parallel Stage 6 branches for electronic (UV-Vis/ECD) and vibrational (IR/VCD) spectroscopy.
 - **Dual execution mode:** every Q-Chem-calling script auto-detects whether SLURM is available. Pass `--local` to force direct execution; omit it on a cluster and jobs are submitted via `sbatch`.
-- **Conformer search** via Open Babel Confab (fast, force-field-based enumeration of torsional conformers).
+- **Two conformer search paths:** Open Babel Confab (fast, force-field-based) or CREST (GFN2-xTB metadynamics, more thorough). Both branches produce the same per-conformer XYZ files consumed by Stage 4.
 - **Boltzmann-weighted spectral averaging** with configurable temperature and population threshold.
 - **Physically correct broadening:** Gaussian convolution in energy space (eV) for electronic spectra and in wavenumber space (cm-1) for vibrational spectra, with Jacobian correction for ECD. Produces both PNG/PDF plots and CSV data tables.
 - **`--dry-run` on every script** to inspect generated Q-Chem inputs without running any calculations.
@@ -25,11 +25,13 @@ A modular Bash/Python workflow for computing UV-Vis absorption, electronic circu
 Stage 1                    Gas-phase geometry optimization
   |                        1-qchem-init-opt.sh
   v
-Stage 2                    Conformer enumeration (Open Babel Confab)
-  |                        2-qchem-conf-search.sh
+Stage 2                    Conformer enumeration
+  |                        2-qchem-conf-search.sh  (Confab)
+  |                   or   2b-qchem-crest-conf-search.sh (CREST)
   v
 Stage 3                    Split conformers into individual XYZ files
-  |                        3-qchem-conf-split.sh
+  |                        3-qchem-conf-split.sh   (Confab output)
+  |                   or   3b-qchem-crest-conf-split.sh  (CREST output)
   v
 Stage 4                    Solvent-phase re-optimization (SMD)
   |                        4-qchem-solvent-opt.sh
@@ -37,19 +39,19 @@ Stage 4                    Solvent-phase re-optimization (SMD)
 Stage 5                    Boltzmann weighting & filtering
   |                        5-qchem-boltzmann-weight.sh
   |
-  |----------------------------------------------+
-  v                                              v
-Stage 6-tddft                                Stage 6-vcd
-  TD-DFT excited-state calculations            Frequency calculations (IR + VCD)
-  6-qchem-tddft.sh                            6-qchem-vcd.sh
-  |                                              |
-  v                                              v
-Plot                                          Plot
-  Broadened UV-Vis & ECD spectra               Broadened IR & VCD spectra
-  qc_ecd_uvvis_tools.py                        qc_vcd_ir_tools.py
+  |------------------------------------------+
+  v                                          v
+Stage 6-tddft                            Stage 6-vcd
+  TD-DFT excited-state calculations        Frequency calculations (IR + VCD)
+  6-qchem-tddft.sh                         6-qchem-vcd.sh
+  |                                          |
+  v                                          v
+Plot                                     Plot
+  Broadened UV-Vis & ECD spectra           Broadened IR & VCD spectra
+  qc_ecd_uvvis_tools.py                    qc_vcd_ir_tools.py
 ```
 
-Stages 1-5 are shared. After Boltzmann filtering, the pipeline branches: run `6-qchem-tddft.sh` for electronic spectra, `6-qchem-vcd.sh` for vibrational spectra, or both.
+Stages 1, 4, and 5 are shared. Stages 2/2b and 3/3b are interchangeable: both produce per-conformer XYZ files in `<TAG>/02_conf_search/split_xyz/` consumed by Stage 4. After Boltzmann filtering, the pipeline branches: run `6-qchem-tddft.sh` for electronic spectra, `6-qchem-vcd.sh` for vibrational spectra, or both.
 
 ---
 
@@ -62,6 +64,7 @@ Stages 1-5 are shared. After Boltzmann filtering, the pipeline branches: run `6-
 | Q-Chem | 6.0+ | Quantum chemistry engine (commercial license required) |
 | Open Babel | >= 3.0 | File conversion & Confab conformer search |
 | Python 3 | >= 3.8 | Plotting tools |
+| CREST | >= 2.12 | _(optional)_ GFN2-xTB conformer search |
 
 Q-Chem uses shared-memory parallelism (OpenMP threads), so no external MPI installation is required.
 
@@ -191,32 +194,39 @@ aspirin/
 |   |-- aspirin.inp            Q-Chem input ($rem/$molecule/$end blocks)
 |   |-- aspirin.out            Q-Chem output
 |   `-- aspirin.slurm          SLURM script (HPC mode only)
-|-- 02_conf_search/            Stage 2 - conformer enumeration (Confab)
+|-- 02_conf_search/            Stage 2/2b - conformer enumeration
 |   |-- aspirin.xyz            extracted optimized geometry
-|   |-- aspirin.sdf            SDF conversion
+|   |-- aspirin.sdf            SDF conversion (Confab path)
 |   |-- aspirin_combined.sdf   all conformers (Confab output)
+|   |-- crest_conformers.xyz   all conformers (CREST output, Stage 2b)
+|   |-- crest.log              CREST log (Stage 2b)
 |   |-- split_sdf/             individual SDF files (Stage 3 writes these)
-|   `-- split_xyz/             individual conformer XYZ files (Stage 3 writes these)
+|   `-- split_xyz/             individual conformer XYZ files (Stage 3 or 3b)
 |       |-- aspirin_001.xyz
 |       |-- aspirin_002.xyz
 |       `-- ...
 |-- 03_solvent_opt/            Stage 4 - solvent-phase re-optimization
+|   |-- aspirin_conf_list.txt  conformer working-dir list (SLURM array input)
+|   |-- aspirin_array.slurm    SLURM array job script (HPC mode)
 |   |-- aspirin_001/
 |   |   |-- aspirin_001.inp
-|   |   |-- aspirin_001.out
-|   |   `-- aspirin_001.slurm  (HPC mode only)
+|   |   `-- aspirin_001.out
 |   `-- aspirin_002/
 |       `-- ...
 |-- 04_boltzmann/              Stage 5 - Boltzmann weighting
 |   |-- aspirin_energies.dat   full table (CID, E, dE, p)
 |   `-- aspirin_bw_labels.dat  conformer IDs above threshold
 |-- 05_tddft/                  Stage 6-tddft - TD-DFT excited states
+|   |-- aspirin_conf_list.txt  conformer working-dir list (SLURM array input)
+|   |-- aspirin_array.slurm    SLURM array job script (HPC mode)
 |   |-- aspirin_001/
 |   |   |-- aspirin_001.inp
 |   |   `-- aspirin_001.out
 |   `-- aspirin_002/
 |       `-- ...
 |-- 05_vcd/                    Stage 6-vcd - frequency calculations
+|   |-- aspirin_conf_list.txt  conformer working-dir list (SLURM array input)
+|   |-- aspirin_array.slurm    SLURM array job script (HPC mode)
 |   |-- aspirin_001/
 |   |   |-- aspirin_001.inp
 |   |   `-- aspirin_001.out
@@ -230,7 +240,7 @@ aspirin/
     `-- *.csv / *.pdf
 ```
 
-**Note:** Stage 2 only generates the combined SDF ensemble. Stage 3 is always required to split that output into the per-conformer XYZ files consumed by Stage 4.
+**Note:** Stage 2 produces a combined SDF ensemble; Stage 3 splits it. If you used the CREST path (Stage 2b), run Stage 3b instead to split `crest_conformers.xyz`. Both splitters write to the same `split_xyz/` directory consumed by Stage 4.
 
 Starting geometries live in `pre_xyz/`:
 
@@ -301,6 +311,48 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 **Input:** `<TAG>/02_conf_search/<TAG>_combined.sdf`
 **Output:** `<TAG>/02_conf_search/split_xyz/<TAG>_NNN.xyz`
 
+### 2b-qchem-crest-conf-search.sh -- CREST Conformer Search (alternative to Stage 2)
+
+```
+2b-qchem-crest-conf-search.sh [OPTIONS] TAG [TAG ...]
+2b-qchem-crest-conf-search.sh [OPTIONS] --list FILE
+```
+
+Uses CREST with GFN2-xTB metadynamics to explore the conformational landscape. More thorough than Confab for flexible molecules; requires the standalone `crest` binary (not via conda). The optimized geometry is extracted automatically from the Stage 1 Q-Chem output; alternatively, supply an XYZ path directly or use `--pre-xyz` to fall back to `pre_xyz/`.
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--cpus N` | `-c` | CPU threads for CREST | `4` |
+| `--mem MB` | | Memory for SLURM job (MB) | `4096` |
+| `--list FILE` | | Text file of TAGs or XYZ paths | |
+| `--local` | | Run CREST directly (no SLURM) | |
+| `--dry-run` | | Echo actions without running | |
+| `--pre-xyz` | | Also search `pre_xyz/` for geometries | |
+| `--partition NAME` | | SLURM partition _(HPC only)_ | `general` |
+| `--time HH:MM:SS` | | SLURM wall time _(HPC only)_ | `06:00:00` |
+
+**Input:** `<TAG>/01_gas_opt/<TAG>.out` (geometry extracted automatically) or an explicit `.xyz` path
+**Output:** `<TAG>/02_conf_search/crest_conformers.xyz`, `<TAG>/02_conf_search/crest.log`
+
+> **Environment note:** The standalone `crest` binary requires GCC/GFortran runtime libraries. If `crest` was compiled against a specific toolchain, activate the matching conda environment (e.g., `conda activate xtb_rt`) before submitting SLURM jobs so that compute nodes inherit the correct `LD_LIBRARY_PATH`.
+
+### 3b-qchem-crest-conf-split.sh -- Split CREST Output (follows Stage 2b)
+
+```
+3b-qchem-crest-conf-split.sh [OPTIONS] TAG [TAG ...]
+3b-qchem-crest-conf-split.sh [OPTIONS] --list FILE
+```
+
+Reads `crest_conformers.xyz` produced by Stage 2b and splits it into numbered per-conformer XYZ files in the same `split_xyz/` directory consumed by Stage 4.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--list FILE` | Text file of TAGs | |
+| `--dry-run` | Echo actions without creating files | |
+
+**Input:** `<TAG>/02_conf_search/crest_conformers.xyz`
+**Output:** `<TAG>/02_conf_search/split_xyz/<TAG>_NNN.xyz` (same format as Stage 3)
+
 ### 4-qchem-solvent-opt.sh -- Solvent-Phase Re-optimization
 
 ```
@@ -316,6 +368,7 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
+| `--max-running N` | | Max concurrent array tasks _(HPC only)_ | `10` |
 | `--qchem-setup PATH` | | Path to Q-Chem setup script | _auto-detected_ |
 | `--list FILE` | | Text file of TAGs | |
 | `--local` | | Run Q-Chem directly (no SLURM) | |
@@ -323,8 +376,10 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 | `--partition NAME` | | SLURM partition _(HPC only)_ | `general` |
 | `--time HH:MM:SS` | | SLURM wall-clock limit _(HPC only)_ | `02:00:00` |
 
-**Input:** `<TAG>/02_conf_search/split_xyz/` (from Stage 3)
+**Input:** `<TAG>/02_conf_search/split_xyz/` (from Stage 3 or 3b)
 **Output:** `<TAG>/03_solvent_opt/<CID>/<CID>.out` (Q-Chem output per conformer)
+
+On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.slurm`) throttled to `--max-running` concurrent tasks. Use `--max-running` to tune cluster load for large ensembles (e.g., CREST output). Set `CLUSTER_MAX_RUNNING` in `cluster.cfg` to apply a site-wide default.
 
 ### 5-qchem-boltzmann-weight.sh -- Boltzmann Weighting & Filtering
 
@@ -359,6 +414,7 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
+| `--max-running N` | | Max concurrent array tasks _(HPC only)_ | `10` |
 | `--qchem-setup PATH` | | Path to Q-Chem setup script | _auto-detected_ |
 | `--list FILE` | | Text file of TAGs | |
 | `--local` | | Run Q-Chem directly (no SLURM) | |
@@ -368,6 +424,8 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 
 **Input:** `<TAG>/04_boltzmann/<TAG>_bw_labels.dat` (from Stage 5) + `<TAG>/03_solvent_opt/<CID>/<CID>.out` (from Stage 4)
 **Output:** `<TAG>/05_tddft/<CID>/<CID>.out` (Q-Chem TD-DFT output with oscillator strengths and rotatory strengths)
+
+On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.slurm`) throttled to `--max-running` concurrent tasks.
 
 ### 6-qchem-vcd.sh -- Frequency / IR + VCD Calculations
 
@@ -383,6 +441,7 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
+| `--max-running N` | | Max concurrent array tasks _(HPC only)_ | `10` |
 | `--qchem-setup PATH` | | Path to Q-Chem setup script | _auto-detected_ |
 | `--list FILE` | | Text file of TAGs | |
 | `--local` | | Run Q-Chem directly (no SLURM) | |
@@ -392,6 +451,8 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 
 **Input:** `<TAG>/04_boltzmann/<TAG>_bw_labels.dat` (from Stage 5) + `<TAG>/03_solvent_opt/<CID>/<CID>.out` (from Stage 4)
 **Output:** `<TAG>/05_vcd/<CID>/<CID>.out` (Q-Chem frequency output with IR intensities and VCD rotatory strengths)
+
+On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.slurm`) throttled to `--max-running` concurrent tasks.
 
 ### qc_ecd_uvvis_tools.py -- Electronic Spectral Broadening & Plotting
 
@@ -632,6 +693,16 @@ The Q-Chem setup script (typically called `setqc` or `qcenv.sh`) sets `QC`, `QCA
 **Empty Boltzmann output:** All conformers fell below `--p-cut`. Lower the threshold (e.g., `--p-cut 0.001`) or check that Stage 4 completed successfully for all conformers.
 
 **Plotting tool import errors:** Install Python dependencies: `pip install -r requirements.txt`
+
+**CREST fails with a shared library error on HPC** (e.g., `version 'GLIBCXX_3.4.XX' not found`): The CREST binary was compiled against a newer libgcc/libgomp than the cluster's system provides. Create a minimal conda environment to supply the missing libraries, then activate it before submitting the Stage 2b job:
+
+```bash
+conda create -n xtb_rt -c conda-forge libgcc libgomp libgfortran
+conda activate xtb_rt
+bash 2b-qchem-crest-conf-search.sh TAG
+```
+
+The SLURM job inherits the activated environment's `LD_LIBRARY_PATH`, so no changes to the batch script are needed.
 
 **VCD frequency job runs slowly:** Analytic Hessian calculations scale more steeply than single-point energies. Use `--dry-run` first to check conformer count. B3LYP is recommended over range-separated hybrids for frequency calculations.
 
