@@ -418,7 +418,7 @@ def _cli() -> None:
             )
         else:
             log_files.extend(glob.glob(token))
-    # Drop SLURM output files (slurm-XXXXXXXX.out) — not Q-Chem outputs
+    # Drop SLURM output files (slurm-XXXXXXXX.out) -- not Q-Chem outputs
     log_files = [f for f in log_files if not Path(f).stem.startswith("slurm-")]
     if not log_files:
         raise SystemExit("No .out files found.")
