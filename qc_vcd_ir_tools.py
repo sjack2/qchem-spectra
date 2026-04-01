@@ -374,6 +374,7 @@ def _cli() -> None:
     parser.add_argument("--ir_ylim", nargs=2, type=float, metavar=("YMIN", "YMAX"))
     parser.add_argument("--vcd_ylim", nargs=2, type=float, metavar=("YMIN", "YMAX"))
     parser.add_argument("--no_title", action="store_true")
+    parser.add_argument("--title", default=None, metavar="STR", help="Custom figure title base (overrides auto-generated title from prefix)")
     args = parser.parse_args()
 
     # -------------------------------------------------------------- #
@@ -439,7 +440,7 @@ def _cli() -> None:
     sigma_ir = _sigma_from_fwhm(args.ir_fwhm)
     sigma_vcd = _sigma_from_fwhm(args.vcd_fwhm)
 
-    base = Path(prefix).name.replace("_", " ")
+    base = args.title if args.title else Path(prefix).name.replace("_", " ")
     title_ir = None if args.no_title else f"{base} IR Spectrum"
     title_vcd = None if args.no_title else f"{base} VCD Spectrum"
 

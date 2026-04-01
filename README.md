@@ -476,6 +476,7 @@ qc_ecd_uvvis_tools.py [OPTIONS] LOGS [LOGS ...]
 | `--flip_x` | Plot long-to-short wavelength | _off_ |
 | `--scale FAC` | Multiply intensities after weighting | `1.0` |
 | `--no_title` | Suppress figure titles | _off_ |
+| `--title STR` | Custom figure title (overrides auto-generated title from prefix) | _auto_ |
 
 **Output:** `<TAG>/06_spectra/<TAG>_uvvis.png/.pdf/.csv`, `<TAG>/06_spectra/<TAG>_ecd.png/.pdf/.csv`
 
@@ -500,6 +501,7 @@ qc_vcd_ir_tools.py [OPTIONS] LOGS [LOGS ...]
 | `--stick` | Overlay stick spectrum | _off_ |
 | `--invert_ir` | Plot IR absorption peaks downward | _off_ |
 | `--no_title` | Suppress figure titles | _off_ |
+| `--title STR` | Custom figure title base (overrides auto-generated title from prefix) | _auto_ |
 
 **Output:** `<TAG>/06_spectra/<TAG>_ir.png/.pdf/.csv`, `<TAG>/06_spectra/<TAG>_vcd.png/.pdf/.csv`
 

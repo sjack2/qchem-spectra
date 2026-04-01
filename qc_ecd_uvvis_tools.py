@@ -360,6 +360,7 @@ def _cli() -> None:
     )
     parser.add_argument("--prefix", default=None, help="Explicit output prefix [spectra]")
     parser.add_argument("--no_title", action="store_true", help="Suppress figure titles")
+    parser.add_argument("--title", default=None, metavar="STR", help="Custom figure title (overrides auto-generated title from prefix)")
     parser.add_argument("--stick", action="store_true", help="Overlay stick spectra")
     parser.add_argument(
         "--flip_x",
@@ -470,7 +471,7 @@ def _cli() -> None:
     fwhm_to_sigma = lambda f: f / (2.0 * np.sqrt(2.0 * np.log(2.0)))
     sigma_uv = fwhm_to_sigma(args.uv_fwhm)
     sigma_ecd = fwhm_to_sigma(args.ecd_fwhm)
-    title = None if args.no_title else Path(prefix).name.replace("_", " ")
+    title = None if args.no_title else (args.title if args.title else Path(prefix).name.replace("_", " "))
 
     _make_plot(
         uv_df,
