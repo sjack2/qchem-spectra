@@ -275,8 +275,8 @@ process_tag() {
 
     local job_dir="${tag}/02_conf_search"
     mkdir -p "$job_dir"
-    # xyz_path may already be inside job_dir (extracted on the fly); cp is harmless
-    cp -f "$xyz_path" "${job_dir}/${tag}.xyz"
+    # xyz_path may already be inside job_dir (extracted on the fly); skip if same file
+    [[ "$xyz_path" -ef "${job_dir}/${tag}.xyz" ]] || cp -f "$xyz_path" "${job_dir}/${tag}.xyz"
 
     # ---- dry run -------------------------------------------------------
     if $dry_run; then
