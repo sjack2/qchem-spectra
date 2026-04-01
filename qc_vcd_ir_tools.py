@@ -71,7 +71,7 @@ SQRT2PI = np.sqrt(2.0 * np.pi)
 _VIB_SECTION_RE = re.compile(r"VIBRATIONAL ANALYSIS", re.IGNORECASE)
 _MODE_RE = re.compile(r"^\s*Mode:\s+(\d+(?:\s+\d+)*)\s*$")
 _FREQ_RE = re.compile(r"^\s*Frequency:\s+(.+)$")
-_IR_RE = re.compile(r"^\s*IR Activ(?:ities)?(?:\s*\([^)]*\))?:\s+(.+)$", re.IGNORECASE)
+_IR_RE = re.compile(r"^\s*IR\s+(?:Activ(?:ities)?(?:\s*\([^)]*\))?|Intens(?:ities)?):\s+(.+)$", re.IGNORECASE)
 # Length gauge: "Rot. Str.(L)", "Rot. Str. (L)", "Rot. Str. (Len)"
 _ROT_L_RE = re.compile(
     r"^\s*Rot(?:atory)?\.?\s*Str(?:ength)?\.?\s*\(L(?:en(?:gth)?)?\):\s+(.+)$",
@@ -86,6 +86,12 @@ _ROT_V_RE = re.compile(
 _ROT_ANY_RE = re.compile(
     r"^\s*Rot(?:atory)?\.?\s*Str(?:ength)?\.?:\s+(.+)$",
     re.IGNORECASE,
+)
+# Separate VCD table: header "Vib. Energy ... Rotational Strength ..."
+_ROT_TABLE_HDR_RE = re.compile(r"Vib\.\s+Energy.*Rotational\s+Strength", re.IGNORECASE)
+# Data rows:  "  N   FREQ_VALUE   ROT_VALUE"
+_ROT_TABLE_ROW_RE = re.compile(
+    r"^\s*\d+\s+([\d.]+)\s+([-+]?[\d.]+(?:[Ee][+-]?\d+)?)\s*$"
 )
 
 
@@ -221,6 +227,30 @@ def parse_qchem_vib(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
                 break
 
     _flush_block()  # don't forget the last block
+
+    # ---------------------------------------------------------------------- #
+    # Second pass: if no VCD rows collected inline, look for the separate     #
+    # "Vib. Energy / Rotational Strength" table that Q-Chem writes when the  #
+    # VCD block follows the normal FREQ output rather than being interspersed.#
+    # ---------------------------------------------------------------------- #
+    if not vcd_rows:
+        in_rot_table = False
+        for line in lines:
+            if _ROT_TABLE_HDR_RE.search(line):
+                in_rot_table = True
+                continue
+            if in_rot_table:
+                if re.match(r"^\s*-{10,}", line):  # separator line
+                    continue
+                m = _ROT_TABLE_ROW_RE.match(line)
+                if m:
+                    freq = float(m.group(1))
+                    rot = float(m.group(2))
+                    if freq > 0.0:
+                        vcd_rows.append({"nu_cm": freq, "intensity": rot})
+                else:
+                    if vcd_rows:  # blank/section header ends the table
+                        break
 
     return (
         pd.DataFrame(ir_rows, columns=["nu_cm", "intensity"]) if ir_rows
