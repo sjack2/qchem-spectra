@@ -83,11 +83,11 @@ IFS=$'\n\t'
 # DEFAULTS
 # ============================================================================
 DEFAULT_METHOD="B3LYP"
-DEFAULT_BASIS="6-31+G(d)"
+DEFAULT_BASIS="def2-SVP"
 DEFAULT_DISP="none"
 DEFAULT_SOLVENT="water"
 DEFAULT_MAX_SCF=150
-DEFAULT_CPUS=12
+DEFAULT_CPUS=4
 DEFAULT_MEM_PER_CPU=2048
 DEFAULT_PARTITION="general"
 DEFAULT_WALL="02:00:00"
