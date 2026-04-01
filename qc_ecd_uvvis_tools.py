@@ -308,6 +308,10 @@ def _make_plot(
 
     if y_limits:
         ax.set_ylim(*y_limits)
+    elif is_ecd:
+        max_abs = max(abs(curve.max()), abs(curve.min()))
+        if max_abs > 0:
+            ax.set_ylim(-max_abs * 1.2, max_abs * 1.2)
     if title:
         ax.set_title(title, fontsize=10)
 

@@ -312,6 +312,10 @@ def _plot(
     ax.set_xlim(nu_max, nu_min)  # IR axis decreases left-to-right
     if ylim:
         ax.set_ylim(*ylim)
+    elif signed:
+        max_abs = max(abs(curve.max()), abs(curve.min()))
+        if max_abs > 0:
+            ax.set_ylim(-max_abs * 1.2, max_abs * 1.2)
     ax.set_xlabel(r"Wavenumber / cm$^{-1}$")
     ax.set_ylabel("Rotatory strength (arb.)" if signed else "Intensity (arb.)")
     if title:
