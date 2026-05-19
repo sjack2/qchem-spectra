@@ -22,6 +22,8 @@
 #   -m | --method NAME         DFT functional                  [B3LYP]
 #   -b | --basis NAME          Basis set                       [6-31+G(d)]
 #        --disp KW             Dispersion: auto|none|D3BJ       [none]
+#        --ri KW               Density fitting: none|j|jk        [none]
+#                              (j -> AUX_BASIS_J RIJ-<basis>; def2 basis only)
 #        --solvent NAME        SMD solvent keyword              [water]
 #        --max-scf N           Max SCF cycles                  [150]
 #   -c | --cpus N              CPU cores                       [12]
@@ -85,6 +87,7 @@ IFS=$'\n\t'
 DEFAULT_METHOD="B3LYP"
 DEFAULT_BASIS="def2-SVP"
 DEFAULT_DISP="none"
+DEFAULT_RI="none"
 DEFAULT_SOLVENT="water"
 DEFAULT_MAX_SCF=150
 DEFAULT_CPUS=4
@@ -186,12 +189,36 @@ disp_line() {
 }
 
 # ============================================================================
+# RI / DENSITY-FITTING LOGIC
+# ============================================================================
+# ORCA auto-applies RI-J with a def2/J auxiliary basis when a def2 orbital
+# basis is requested; Q-Chem does not. Setting AUX_BASIS_J both selects the
+# J-fitting auxiliary basis AND switches RI-J on. Auxiliary names follow the
+# RIJ-<basis> / RIJK-<basis> convention (Q-Chem manual Table 8.9), so they are
+# auto-derived only for the def2 family.
+ri_lines() {
+    case $ri_mode in
+        none|NONE) printf '' ;;
+        j|J)
+            [[ ${basis,,} == def2-* ]] || \
+                die "--ri j needs a def2-* basis (got '${basis}'); RI aux sets are auto-derived only for the def2 family"
+            printf '  AUX_BASIS_J         RIJ-%s' "$basis" ;;
+        jk|JK)
+            [[ ${basis,,} == def2-* ]] || \
+                die "--ri jk needs a def2-* basis (got '${basis}')"
+            printf '  AUX_BASIS_J         RIJK-%s\n  AUX_BASIS_K         RIJK-%s' "$basis" "$basis" ;;
+        *) die "--ri must be none, j, or jk" ;;
+    esac
+}
+
+# ============================================================================
 # CLI PARSER
 # ============================================================================
 parse_cli() {
     method=$DEFAULT_METHOD
     basis=$DEFAULT_BASIS
     disp_mode=$DEFAULT_DISP
+    ri_mode=$DEFAULT_RI
     solvent=$DEFAULT_SOLVENT
     max_scf=$DEFAULT_MAX_SCF
     cpus=$DEFAULT_CPUS
@@ -207,7 +234,7 @@ parse_cli() {
 
     local opts
     opts=$(getopt -o hb:m:c: \
-        --long help,basis:,method:,disp:,solvent:,max-scf:,cpus:,\
+        --long help,basis:,method:,disp:,ri:,solvent:,max-scf:,cpus:,\
 mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
@@ -217,6 +244,7 @@ mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "
             -m|--method)      method=$2;            shift 2 ;;
             -b|--basis)       basis=$2;             shift 2 ;;
             --disp)           disp_mode=$2;         shift 2 ;;
+            --ri)             ri_mode=$2;           shift 2 ;;
             --solvent)        solvent=$2;            shift 2 ;;
             --max-scf)        max_scf=$2;           shift 2 ;;
             -c|--cpus)        cpus=$2;              shift 2 ;;
@@ -248,8 +276,9 @@ mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "
 # ============================================================================
 write_qchem_input() {
     local cid=$1 xyz_file=$2 inp_file=$3
-    local disp
+    local disp ri
     disp=$(disp_line)
+    ri=$(ri_lines)
 
     cat >"$inp_file" <<EOF
 \$comment
@@ -272,6 +301,7 @@ $(tail -n +3 "$xyz_file")
   THRESH              11
   XC_GRID             3
 ${disp}
+${ri}
 \$end
 
 \$smx
