@@ -269,6 +269,7 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 | `--method NAME` | `-m` | DFT functional | `B3LYP` |
 | `--basis NAME` | `-b` | Basis set | `def2-SVP` |
 | `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `auto` |
+| `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--max-iter N` | | SCF iteration limit | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
 | `--grid KW` | `-g` | Integration grid: `SG1`, `SG2`, `SG3` | `SG3` |
@@ -364,6 +365,7 @@ Reads `crest_conformers.xyz` produced by Stage 2b and splits it into numbered pe
 | `--method NAME` | `-m` | DFT functional | `B3LYP` |
 | `--basis NAME` | `-b` | Basis set | `6-31+G(d)` |
 | `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `none` |
+| `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--solvent NAME` | | SMD solvent keyword | `water` |
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
@@ -409,6 +411,7 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 |------|-------|-------------|---------|
 | `--method NAME` | `-m` | TD-DFT functional | `CAM-B3LYP` |
 | `--basis NAME` | `-b` | Basis set | `def2-SVP` |
+| `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--roots N` | | Number of excited states | `30` |
 | `--solvent NAME` | | SMD solvent keyword | `water` |
 | `--max-scf N` | | Max SCF cycles | `150` |
@@ -437,6 +440,7 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 |------|-------|-------------|---------|
 | `--method NAME` | `-m` | DFT functional | `B3LYP` |
 | `--basis NAME` | `-b` | Basis set | `6-31+G(d)` |
+| `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--solvent NAME` | | SMD solvent keyword | `water` |
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
@@ -539,7 +543,7 @@ The `--method` flag accepts any Q-Chem-recognized functional keyword. Common cho
 
 ### Basis Sets
 
-The `--basis` flag accepts any Q-Chem basis set keyword. Q-Chem does not require a separate auxiliary basis for RI-J -- density fitting is handled internally when applicable.
+The `--basis` flag accepts any Q-Chem basis set keyword. By default Q-Chem evaluates exact four-center integrals (no density fitting); RI-J is opt-in via the `--ri` flag (see [Density Fitting (RI)](#density-fitting-ri) below).
 
 | Basis | Quality | Typical Use |
 |-------|---------|-------------|
@@ -565,6 +569,20 @@ The `--disp` flag controls how dispersion is applied. In Q-Chem, dispersion is s
 | `auto` _(default for Stage 1)_ | Detects whether the functional already includes dispersion (e.g., wB97X-**D3**). If not, adds D3(BJ). |
 | `none` _(default for Stage 4)_ | No dispersion correction. |
 | `D3BJ` | Grimme's D3 with Becke-Johnson damping (`DFT_D D3_BJ` in `$rem`). |
+
+### Density Fitting (RI)
+
+The `--ri` flag enables the resolution-of-identity (RI, a.k.a. density fitting) approximation via `AUX_BASIS_J` / `AUX_BASIS_K` in the `$rem` block. Unlike ORCA -- which applies RI-J automatically when a def2 orbital basis is requested -- Q-Chem runs the full four-center integrals unless RI is turned on explicitly. Enabling it can cut SCF / TD-DFT wall-time substantially (roughly 2x in our benchmark) at the same theory level.
+
+| Value | Behavior |
+|-------|-----------|
+| `none` _(default, all stages)_ | No density fitting; exact four-center integrals. |
+| `j` | RI-J on the Coulomb term: `AUX_BASIS_J RIJ-<basis>`. Equivalent to ORCA's `def2/J`. |
+| `jk` | RI-J and RI-K: `AUX_BASIS_J` and `AUX_BASIS_K` set to `RIJK-<basis>`. |
+
+The auxiliary basis name is auto-derived from the orbital basis (e.g. `def2-TZVP` -> `RIJ-def2-TZVP`), so **`--ri` requires a `def2-*` orbital basis**. Pass `-b def2-TZVP` (or similar) when combining `--ri` with a script whose default basis is a Pople set such as `6-31+G(d)`; otherwise the script exits with a descriptive error.
+
+**Note on frequencies / VCD:** RI-J is well established for SCF energies and gradients, but its interaction with the analytic Hessian and atomic axial tensors (VCD) is less universally validated. Test `--ri j` on a small molecule (e.g. methyloxirane) and confirm the frequencies and rotatory strengths look sane before relying on it for a production VCD set.
 
 ---
 

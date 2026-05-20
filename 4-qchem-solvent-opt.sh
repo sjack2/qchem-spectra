@@ -176,14 +176,14 @@ disp_line() {
     local method_upper=${method^^}
     case $disp_mode in
         none|NONE) printf '' ;;
-        D3BJ|d3bj) printf '  DFT_D              D3_BJ' ;;
+        D3BJ|d3bj) printf '\n  DFT_D              D3_BJ' ;;
         auto|AUTO)
             if [[ $method =~ (-D[0-9]?|-D3BJ|-D3ZERO|-D4)($|[[:space:]]) ]]; then
                 printf ''; return; fi
             case $method_upper in
                 WB97X-D|WB97X-D3|WB97X-D4|WB97X-V|WB97XD|WB97M-V|B97-D|B97-D3)
                     printf ''; return ;; esac
-            printf '  DFT_D              D3_BJ' ;;
+            printf '\n  DFT_D              D3_BJ' ;;
         *) die "--disp must be auto, none, or D3BJ" ;;
     esac
 }
@@ -202,11 +202,11 @@ ri_lines() {
         j|J)
             [[ ${basis,,} == def2-* ]] || \
                 die "--ri j needs a def2-* basis (got '${basis}'); RI aux sets are auto-derived only for the def2 family"
-            printf '  AUX_BASIS_J         RIJ-%s' "$basis" ;;
+            printf '\n  AUX_BASIS_J         RIJ-%s' "$basis" ;;
         jk|JK)
             [[ ${basis,,} == def2-* ]] || \
                 die "--ri jk needs a def2-* basis (got '${basis}')"
-            printf '  AUX_BASIS_J         RIJK-%s\n  AUX_BASIS_K         RIJK-%s' "$basis" "$basis" ;;
+            printf '\n  AUX_BASIS_J         RIJK-%s\n  AUX_BASIS_K         RIJK-%s' "$basis" "$basis" ;;
         *) die "--ri must be none, j, or jk" ;;
     esac
 }
@@ -299,9 +299,7 @@ $(tail -n +3 "$xyz_file")
   SCF_CONVERGENCE     8
   SYM_IGNORE          TRUE
   THRESH              11
-  XC_GRID             3
-${disp}
-${ri}
+  XC_GRID             3${disp}${ri}
 \$end
 
 \$smx

@@ -20,6 +20,8 @@
 # Flags:
 #   -m | --method NAME         TD-DFT functional               [CAM-B3LYP]
 #   -b | --basis NAME          Basis set                        [def2-SVP]
+#        --ri KW               Density fitting: none|j|jk        [none]
+#                              (j -> AUX_BASIS_J RIJ-<basis>; def2 basis only)
 #        --roots N             Number of excited states          [30]
 #        --solvent NAME        SMD solvent keyword               [water]
 #        --max-scf N           Max SCF cycles                    [150]
@@ -74,6 +76,7 @@ IFS=$'\n\t'
 # ============================================================================
 DEFAULT_METHOD="CAM-B3LYP"
 DEFAULT_BASIS="def2-TZVP"
+DEFAULT_RI="none"
 DEFAULT_ROOTS=30
 DEFAULT_SOLVENT="water"
 DEFAULT_MAX_SCF=150
@@ -189,11 +192,34 @@ read_xyz_header() {
 }
 
 # ============================================================================
+# RI / DENSITY-FITTING LOGIC
+# ============================================================================
+# Setting AUX_BASIS_J both selects the J-fitting auxiliary basis AND switches
+# RI-J on (ORCA applies this automatically with def2/J; Q-Chem does not).
+# Auxiliary names follow the RIJ-<basis> / RIJK-<basis> convention (Q-Chem
+# manual Table 8.9), auto-derived only for the def2 family.
+ri_lines() {
+    case $ri_mode in
+        none|NONE) printf '' ;;
+        j|J)
+            [[ ${basis,,} == def2-* ]] || \
+                die "--ri j needs a def2-* basis (got '${basis}'); RI aux sets are auto-derived only for the def2 family"
+            printf '\n  AUX_BASIS_J         RIJ-%s' "$basis" ;;
+        jk|JK)
+            [[ ${basis,,} == def2-* ]] || \
+                die "--ri jk needs a def2-* basis (got '${basis}')"
+            printf '\n  AUX_BASIS_J         RIJK-%s\n  AUX_BASIS_K         RIJK-%s' "$basis" "$basis" ;;
+        *) die "--ri must be none, j, or jk" ;;
+    esac
+}
+
+# ============================================================================
 # CLI PARSER
 # ============================================================================
 parse_cli() {
     method=$DEFAULT_METHOD
     basis=$DEFAULT_BASIS
+    ri_mode=$DEFAULT_RI
     roots=$DEFAULT_ROOTS
     solvent=$DEFAULT_SOLVENT
     max_scf=$DEFAULT_MAX_SCF
@@ -210,7 +236,7 @@ parse_cli() {
 
     local opts
     opts=$(getopt -o hb:m:c: \
-        --long help,method:,basis:,roots:,solvent:,max-scf:,cpus:,\
+        --long help,method:,basis:,ri:,roots:,solvent:,max-scf:,cpus:,\
 mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
@@ -219,6 +245,7 @@ mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "
         case $1 in
             -m|--method)      method=$2;             shift 2 ;;
             -b|--basis)       basis=$2;              shift 2 ;;
+            --ri)             ri_mode=$2;            shift 2 ;;
             --roots)          roots=$2;              shift 2 ;;
             --solvent)        solvent=$2;            shift 2 ;;
             --max-scf)        max_scf=$2;            shift 2 ;;
@@ -251,6 +278,8 @@ mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "
 # ============================================================================
 write_qchem_input() {
     local cid=$1 xyz_file=$2 inp_file=$3
+    local ri
+    ri=$(ri_lines)
 
     cat >"$inp_file" <<EOF
 \$comment
@@ -274,7 +303,7 @@ $(tail -n +3 "$xyz_file")
   SCF_CONVERGENCE     8
   MAX_SCF_CYCLES      ${max_scf}
   SYM_IGNORE          TRUE
-  XC_GRID             3
+  XC_GRID             3${ri}
 \$end
 
 \$smx

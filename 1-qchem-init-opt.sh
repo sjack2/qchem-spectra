@@ -23,6 +23,7 @@
 #   -m | --method METHOD           DFT functional               [B3LYP]
 #   -b | --basis  BASIS            Basis set                    [def2-SVP]
 #        --disp {auto,none,D3BJ}   Dispersion correction        [auto]
+#        --ri {none,j,jk}          Density fitting (def2 only)   [none]
 #        --max-iter N              SCF iteration limit           [150]
 #   -c | --cpus N                  CPU cores (threads + SLURM)  [12]
 #   -g | --grid {SG1,SG2,SG3}     Integration grid              [SG3]
@@ -78,6 +79,7 @@ IFS=$'\n\t'
 DEFAULT_METHOD="B3LYP"
 DEFAULT_BASIS="def2-SVP"
 DEFAULT_DISP="auto"
+DEFAULT_RI="none"
 DEFAULT_MAX_ITER=150
 DEFAULT_CPUS=4
 DEFAULT_GRID="SG3"
@@ -243,12 +245,35 @@ disp_line() {
 }
 
 # ============================================================================
+# RI / DENSITY-FITTING LOGIC
+# ============================================================================
+# Setting AUX_BASIS_J both selects the J-fitting auxiliary basis AND switches
+# RI-J on (ORCA applies this automatically with def2/J; Q-Chem does not).
+# Auxiliary names follow the RIJ-<basis> / RIJK-<basis> convention (Q-Chem
+# manual Table 8.9), auto-derived only for the def2 family.
+ri_lines() {
+    case $ri_mode in
+        none|NONE) printf '' ;;
+        j|J)
+            [[ ${basis,,} == def2-* ]] || \
+                die "--ri j needs a def2-* basis (got '${basis}'); RI aux sets are auto-derived only for the def2 family"
+            printf '  AUX_BASIS_J         RIJ-%s' "$basis" ;;
+        jk|JK)
+            [[ ${basis,,} == def2-* ]] || \
+                die "--ri jk needs a def2-* basis (got '${basis}')"
+            printf '  AUX_BASIS_J         RIJK-%s\n  AUX_BASIS_K         RIJK-%s' "$basis" "$basis" ;;
+        *) die "--ri must be none, j, or jk" ;;
+    esac
+}
+
+# ============================================================================
 # CLI PARSER
 # ============================================================================
 parse_cli() {
     method=$DEFAULT_METHOD
     basis=$DEFAULT_BASIS
     disp_mode=$DEFAULT_DISP
+    ri_mode=$DEFAULT_RI
     max_iter=$DEFAULT_MAX_ITER
     cpus=$DEFAULT_CPUS
     grid=$DEFAULT_GRID
@@ -263,7 +288,7 @@ parse_cli() {
 
     local opts
     opts=$(getopt -o hb:m:c:g: \
-        --long help,basis:,method:,disp:,max-iter:,cpus:,grid:,\
+        --long help,basis:,method:,disp:,ri:,max-iter:,cpus:,grid:,\
 mem-per-cpu:,partition:,time:,list:,dry-run,local,qchem-setup: -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
@@ -273,6 +298,7 @@ mem-per-cpu:,partition:,time:,list:,dry-run,local,qchem-setup: -- "$@") \
             -m|--method)      method=$2;             shift 2 ;;
             -b|--basis)       basis=$2;              shift 2 ;;
             --disp)           disp_mode=$2;          shift 2 ;;
+            --ri)             ri_mode=$2;            shift 2 ;;
             --max-iter)       max_iter=$2;           shift 2 ;;
             -c|--cpus)        cpus=$2;               shift 2 ;;
             -g|--grid)        grid=$2;               shift 2 ;;
@@ -309,9 +335,10 @@ mem-per-cpu:,partition:,time:,list:,dry-run,local,qchem-setup: -- "$@") \
 # ============================================================================
 write_qchem_input() {
     local inp_file=$1 xyz_file=$2
-    local disp grid_num
+    local disp grid_num ri
     disp=$(disp_line)
     grid_num=$(grid_number)
+    ri=$(ri_lines)
 
     cat >"$inp_file" <<EOF
 \$rem
@@ -329,6 +356,11 @@ EOF
     # append dispersion line only if the function returned one
     if [[ -n $disp ]]; then
         echo "${disp}" >>"$inp_file"
+    fi
+
+    # append RI / density-fitting line(s) only if requested
+    if [[ -n $ri ]]; then
+        echo "${ri}" >>"$inp_file"
     fi
 
     cat >>"$inp_file" <<EOF
