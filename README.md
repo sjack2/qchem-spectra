@@ -1,8 +1,6 @@
-# Q-Chem Computational Spectra Lab
+# Q-Chem Computational Spectra Workflow
 
-A modular Bash/Python workflow for computing UV-Vis absorption, electronic circular dichroism (ECD), and vibrational circular dichroism (VCD) spectra using Q-Chem density functional theory. Designed for teaching and research, and runs identically on a local workstation or a SLURM-managed HPC cluster.
-
-> **Accompanying article:**  _A Computational Spectroscopy Module for Teaching DFT-Based Spectral Workflows in Graduate Chemistry_ (in preparation for the _Journal of Chemical Education_).
+A modular Bash/Python workflow for computing UV-Vis absorption, electronic circular dichroism (ECD), infrared (IR), vibrational circular dichroism (VCD), and Raman spectra using Q-Chem density functional theory. Designed for research use, and runs identically on a local workstation or a SLURM-managed HPC cluster.
 
 > **License requirement:** Q-Chem is commercial software. You must hold a valid Q-Chem license before using this workflow. Academic site licenses are available from [Q-Chem, Inc.](https://www.q-chem.com/)
 
@@ -10,7 +8,7 @@ A modular Bash/Python workflow for computing UV-Vis absorption, electronic circu
 
 ## Features
 
-- **Six-stage pipeline** from raw XYZ geometry to publication-quality broadened spectra, with parallel Stage 6 branches for electronic (UV-Vis/ECD) and vibrational (IR/VCD) spectroscopy.
+- **Six-stage pipeline** from raw XYZ geometry to publication-quality broadened spectra, with parallel Stage 6 branches for electronic (UV-Vis/ECD) and vibrational (IR/VCD/Raman) spectroscopy.
 - **Dual execution mode:** every Q-Chem-calling script auto-detects whether SLURM is available. Pass `--local` to force direct execution; omit it on a cluster and jobs are submitted via `sbatch`.
 - **Two conformer search paths:** Open Babel Confab (fast, force-field-based) or CREST (GFN2-xTB metadynamics, more thorough). Both branches produce the same per-conformer XYZ files consumed by Stage 4.
 - **Boltzmann-weighted spectral averaging** with configurable temperature and population threshold.
@@ -248,8 +246,11 @@ Starting geometries live in `pre_xyz/`:
 ```
 pre_xyz/
 |-- pna.xyz
+|-- dmabn.xyz
+|-- methyloxirane.xyz
+|-- methyloxirane_R.xyz
 |-- ephedrine.xyz
-`-- methyloxirane.xyz
+`-- ...            (one .xyz per molecule; see Example Molecules below)
 ```
 
 ---
@@ -430,7 +431,7 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 | `--dry-run` | | Write inputs without running | |
 | `--grid LEVEL` | `-g` | Integration grid: `coarse`/`default`/`fine`/`ultrafine` (see [Convergence & Grid Tiers](#convergence--grid-tiers)) | `default` |
 | `--scf-conv LEVEL` | | SCF convergence: `default`/`verytight`/`extreme` | `default` |
-| `--variant LABEL` | | Suffix output dir → `05_tddft_LABEL` (run variants side by side) | |
+| `--variant LABEL` | | Suffix output dir -> `05_tddft_LABEL` (run variants side by side) | |
 | `--partition NAME` | | SLURM partition _(HPC only)_ | `general` |
 | `--time HH:MM:SS` | | SLURM wall-clock limit _(HPC only)_ | `04:00:00` |
 
@@ -462,7 +463,7 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 | `--dry-run` | | Write inputs without running | |
 | `--grid LEVEL` | `-g` | Integration grid: `coarse`/`default`/`fine`/`ultrafine` (see [Convergence & Grid Tiers](#convergence--grid-tiers)) | `default` |
 | `--scf-conv LEVEL` | | SCF + CP-SCF convergence: `default`/`verytight`/`extreme` | `default` |
-| `--variant LABEL` | | Suffix output dir → `05_vcd_LABEL` (run variants side by side) | |
+| `--variant LABEL` | | Suffix output dir -> `05_vcd_LABEL` (run variants side by side) | |
 | `--partition NAME` | | SLURM partition _(HPC only)_ | `general` |
 | `--time HH:MM:SS` | | SLURM wall-clock limit _(HPC only)_ | `06:00:00` |
 
@@ -582,11 +583,14 @@ The `--method` flag accepts any Q-Chem-recognized functional keyword. Common cho
 
 | Functional | Type | HF Exchange | Typical Use |
 |------------|------|-------------|-------------|
-| B3LYP | Hybrid GGA | 20% | Geometry optimization, IR/VCD frequencies |
-| PBE0 | Hybrid GGA | 25% | Slightly better than B3LYP for many properties |
-| CAM-B3LYP | Range-separated | 19-65% | Charge-transfer excitations, ECD |
-| wB97X-D3 | Range-separated | 22-100% | TD-DFT benchmark standard |
-| M06-2X | Hybrid meta-GGA | 54% | Main-group thermochemistry |
+| `B3LYP` | Hybrid GGA | 20% | Geometry optimization, IR/VCD frequencies |
+| `PBE0` | Hybrid GGA | 25% | Slightly better than B3LYP for many properties |
+| `BP86` | Pure GGA | 0% | Inexpensive geometries and frequencies |
+| `TPSSh` | Hybrid meta-GGA | 10% | Good geometries/frequencies at modest cost |
+| `CAM-B3LYP` | Range-separated | 19-65% | Charge-transfer excitations, ECD |
+| `wB97X-D3` | Range-separated | 22-100% | TD-DFT benchmark standard |
+| `wB97X-V` | Range-separated | 16-100% | Modern range-separated hybrid (VV10 nonlocal dispersion) |
+| `M06-2X` | Hybrid meta-GGA | 54% | Main-group thermochemistry |
 
 **Note on VCD:** For vibrational spectra, B3LYP is the most extensively benchmarked functional and is generally recommended as a starting point. Range-separated hybrids (CAM-B3LYP, wB97X-D3) offer no systematic advantage for harmonic frequencies and are significantly more expensive for analytic Hessian calculations.
 
@@ -599,7 +603,10 @@ The `--basis` flag accepts any Q-Chem basis set keyword. By default Q-Chem evalu
 | `def2-SVP` | Double-zeta | Gas-phase geometry optimization |
 | `6-31+G(d)` | Double-zeta + diffuse | Pople alternative (optional; not a default) |
 | `def2-TZVP` | Triple-zeta | Solvent-phase opt, TD-DFT, IR/VCD frequencies |
+| `def2-TZVPD` | Triple-zeta + diffuse | Diffuse-augmented properties (anions, ECD) |
 | `6-311+G(d,p)` | Triple-zeta + diffuse | Basis set convergence checks |
+| `cc-pVTZ` | Triple-zeta | Dunning-family alternative |
+| `def2-QZVP` | Quadruple-zeta | Near-basis-set-limit reference (expensive) |
 
 ### Solvents
 
@@ -635,9 +642,9 @@ The auxiliary basis name is auto-derived from the orbital basis (e.g. `def2-TZVP
 
 ### Convergence & Grid Tiers
 
-Four flags expose numerical-precision control with a vocabulary shared across stages (and with the companion ORCA workflow, so a level means the same thing on both engines). Every flag defaults to `default`, which reproduces the original pipeline settings — existing runs are unaffected.
+Four flags expose numerical-precision control with a vocabulary shared across stages (and with the companion ORCA workflow, so a level means the same thing on both engines). Every flag defaults to `default`, which reproduces the original pipeline settings -- existing runs are unaffected.
 
-**`--grid` (all stages)** — DFT integration grid (`XC_GRID`). In Q-Chem one value drives the SCF, the CP-SCF response (VCD's atomic axial tensor) and the Hessian alike:
+**`--grid` (all stages)** -- DFT integration grid (`XC_GRID`). In Q-Chem one value drives the SCF, the CP-SCF response (VCD's atomic axial tensor) and the Hessian alike:
 
 | Level | `XC_GRID` | Notes |
 |-------|-----------|-------|
@@ -648,7 +655,7 @@ Four flags expose numerical-precision control with a vocabulary shared across st
 
 `SG1`/`SG2`/`SG3` and a raw 12-digit `XC_GRID` code are also accepted.
 
-**`--scf-conv` (all stages)** — SCF convergence; `verytight`/`extreme` also raise `THRESH` to 14 (the manual requires `THRESH ≥ SCF_CONVERGENCE + 3`). In Stage 6b this tightens the analytic-derivative / CP-SCF accuracy behind the VCD rotatory strengths:
+**`--scf-conv` (all stages)** -- SCF convergence; `verytight`/`extreme` also raise `THRESH` to 14 (the manual requires `THRESH >= SCF_CONVERGENCE + 3`). In Stage 6b this tightens the analytic-derivative / CP-SCF accuracy behind the VCD rotatory strengths:
 
 | Level | `SCF_CONVERGENCE` | `THRESH` |
 |-------|-------------------|----------|
@@ -656,7 +663,7 @@ Four flags expose numerical-precision control with a vocabulary shared across st
 | `verytight` | 10 | 14 |
 | `extreme` | 11 | 14 |
 
-**`--opt-conv` (Stages 1 & 4 only)** — geometry-optimization thresholds (`GEOM_OPT_TOL_*`, in 10⁻⁶/10⁻⁶/10⁻⁸ a.u.; chosen to match ORCA's `TightOpt`/`VeryTightOpt`):
+**`--opt-conv` (Stages 1 & 4 only)** -- geometry-optimization thresholds (`GEOM_OPT_TOL_*`, in 10^-6 / 10^-6 / 10^-8 a.u.; chosen to match ORCA's `TightOpt`/`VeryTightOpt`):
 
 | Level | `GRADIENT` | `DISPLACEMENT` | `ENERGY` |
 |-------|------------|----------------|----------|
@@ -664,7 +671,7 @@ Four flags expose numerical-precision control with a vocabulary shared across st
 | `tight` | 100 | 1000 | 100 |
 | `verytight` | 30 | 200 | 20 |
 
-**`--variant LABEL` (Stages 6a & 6b only)** — suffixes the output directory (`05_vcd_LABEL`, `05_tddft_LABEL`) so several grid / functional / convergence variants of a stage can coexist and run concurrently without overwriting each other. Point the plotting tools at the variant directory via their input-path argument. Not offered on Stages 1/4, whose output-directory names are consumed by downstream stages.
+**`--variant LABEL` (Stages 6a & 6b only)** -- suffixes the output directory (`05_vcd_LABEL`, `05_tddft_LABEL`) so several grid / functional / convergence variants of a stage can coexist and run concurrently without overwriting each other. Point the plotting tools at the variant directory via their input-path argument. Not offered on Stages 1/4, whose output-directory names are consumed by downstream stages.
 
 ---
 
@@ -747,32 +754,17 @@ aspirin
 
 The `pre_xyz/` directory includes starting geometries for several test molecules:
 
-**Session 1 -- Rigid chromophores (UV-Vis benchmarking):**
+**Achiral chromophores (UV-Vis, IR):**
 - `pna.xyz` -- para-nitroaniline (intramolecular charge transfer)
 - `dmabn.xyz` -- 4-(dimethylamino)benzonitrile (dual fluorescence)
 
-**Session 2 -- Flexible chiral molecules (ECD + conformational averaging):**
-- `ephedrine.xyz` -- (1R,2S)-ephedrine (amino alcohol, 4-10 conformers)
+**Chiral molecules (ECD, VCD, Raman + conformational averaging):**
+- `methyloxirane.xyz` -- (S)-methyloxirane (propylene oxide; the canonical rigid VCD/ECD benchmark)
+- `methyloxirane_R.xyz` -- (R)-methyloxirane (mirror image of the above; gives sign-flipped ECD/VCD)
+- `phenylethan1ol.xyz` -- (S)-1-phenylethan-1-ol (alpha-methylbenzyl alcohol, moderate flexibility)
 - `norephedrine.xyz` -- (1S,2R)-norephedrine (amino alcohol)
-- `methyloxirane.xyz` -- (S)-methyloxirane (propylene oxide, small chiral reference)
-- `phenylethan1ol.xyz` -- (S)-1-phenylethan-1-ol (alpha-methylbenzyl alcohol)
+- `ephedrine.xyz` -- (1R,2S)-ephedrine (amino alcohol, 4-10 conformers)
 - `sparteine.xyz` -- (-)-sparteine (tetracyclic alkaloid, large conformer space)
-
-**Session 3 -- Vibrational chiroptical spectroscopy (VCD):**
-- `methyloxirane.xyz` -- (S)-methyloxirane (the canonical VCD benchmark, rigid)
-- `phenylethan1ol.xyz` -- (S)-1-phenylethan-1-ol (moderate flexibility, VCD literature reference)
-
----
-
-## Lab Sessions
-
-This workflow supports three independent teaching sessions. Each lab is self-contained; instructors can offer them in any order or combination.
-
-| Lab | Duration |
-|-----|----------|
-| UV-Vis Benchmarking (PNA) | 3 hours |
-| ECD + Conformational Averaging (Ephedrine) | 3 hours |
-| VCD/IR Spectroscopy (Methyloxirane) | 3 hours |
 
 ---
 
@@ -814,12 +806,12 @@ The SLURM job inherits the activated environment's `LD_LIBRARY_PATH`, so no chan
 
 ## Citation
 
-If you use this workflow in published research or teaching, please cite:
+If you use this workflow in published research, please cite the repository:
 
-> [Author], [Author]. A Computational Spectroscopy Module for Teaching DFT-Based Spectral Workflows in Graduate Chemistry. _J. Chem. Educ._ **2026**, _XX_, XXXX-XXXX.
+> Stephen Jackson. _Q-Chem Computational Spectra Workflow_. The University of South Florida, 2026. https://github.com/sjack2/qchem-spectra
 
 ---
 
 ## License
 
-[To be determined -- recommend MIT or BSD-3-Clause for JCE educational software.]
+Released under the MIT License. See [`LICENSE`](LICENSE) for the full text.
