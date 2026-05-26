@@ -20,10 +20,14 @@
 #
 # Flags:
 #   -m | --method NAME         DFT functional                  [B3LYP]
-#   -b | --basis NAME          Basis set                       [6-31+G(d)]
-#        --disp KW             Dispersion: auto|none|D3BJ       [none]
+#   -b | --basis NAME          Basis set                       [def2-TZVP]
+#        --disp KW             Dispersion: auto|none|D3BJ       [auto]
 #        --ri KW               Density fitting: none|j|jk        [none]
 #                              (j -> AUX_BASIS_J RIJ-<basis>; def2 basis only)
+#   -g | --grid LEVEL          Integration grid: coarse|default|fine|ultrafine [default]
+#                              (also SG1/SG2/SG3 or a 12-digit XC_GRID code)
+#        --scf-conv LEVEL      SCF convergence: default|verytight|extreme [default]
+#        --opt-conv LEVEL      Geometry convergence: default|tight|verytight [default]
 #        --solvent NAME        SMD solvent keyword              [water]
 #        --max-scf N           Max SCF cycles                  [150]
 #   -c | --cpus N              CPU cores                       [12]
@@ -85,9 +89,12 @@ IFS=$'\n\t'
 # DEFAULTS
 # ============================================================================
 DEFAULT_METHOD="B3LYP"
-DEFAULT_BASIS="def2-SVP"
-DEFAULT_DISP="none"
+DEFAULT_BASIS="def2-TZVP"
+DEFAULT_DISP="auto"
 DEFAULT_RI="none"
+DEFAULT_GRID="default"
+DEFAULT_SCF_CONV="default"
+DEFAULT_OPT_CONV="default"
 DEFAULT_SOLVENT="water"
 DEFAULT_MAX_SCF=150
 DEFAULT_CPUS=4
@@ -212,6 +219,52 @@ ri_lines() {
 }
 
 # ============================================================================
+# INTEGRATION-GRID / SCF / GEOMETRY-CONVERGENCE LOGIC
+# ============================================================================
+# Named tiers, consistent across engines and stages (see README). In Q-Chem one
+# XC_GRID value drives the whole calculation; SCF_CONVERGENCE+THRESH set SCF
+# accuracy (THRESH >= SCF_CONVERGENCE+3, caps at 14); GEOM_OPT_TOL_* set the
+# geometry-convergence thresholds (integers in 1e-6 / 1e-6 / 1e-8 a.u.).
+xc_grid_value() {
+    case ${grid,,} in
+        coarse)    printf '1' ;;
+        default)   printf '3' ;;
+        fine)      printf '000099000590' ;;
+        ultrafine) printf '000099000974' ;;
+        sg1|1)     printf '1' ;;
+        sg2|2)     printf '2' ;;
+        sg3|3)     printf '3' ;;
+        *)         printf '%s' "$grid" ;;   # validated 12-digit code (parse_cli)
+    esac
+}
+
+scf_conv_value() {
+    case ${scf_conv,,} in
+        default)   printf '8' ;;
+        verytight) printf '10' ;;
+        extreme)   printf '11' ;;
+        *)         printf '8' ;;
+    esac
+}
+
+scf_thresh_value() {
+    case ${scf_conv,,} in
+        default)   printf '11' ;;   # Stage-4 historical default
+        *)         printf '14' ;;   # verytight/extreme
+    esac
+}
+
+# GEOM_OPT_TOL_* lines (empty for default = Q-Chem 300/1200/100); matched to
+# ORCA TightOpt / VeryTightOpt.
+opt_conv_lines() {
+    case ${opt_conv,,} in
+        tight)     printf '\n  GEOM_OPT_TOL_GRADIENT      100\n  GEOM_OPT_TOL_DISPLACEMENT  1000\n  GEOM_OPT_TOL_ENERGY        100' ;;
+        verytight) printf '\n  GEOM_OPT_TOL_GRADIENT       30\n  GEOM_OPT_TOL_DISPLACEMENT   200\n  GEOM_OPT_TOL_ENERGY         20' ;;
+        *)         printf '' ;;
+    esac
+}
+
+# ============================================================================
 # CLI PARSER
 # ============================================================================
 parse_cli() {
@@ -219,6 +272,9 @@ parse_cli() {
     basis=$DEFAULT_BASIS
     disp_mode=$DEFAULT_DISP
     ri_mode=$DEFAULT_RI
+    grid=$DEFAULT_GRID
+    scf_conv=$DEFAULT_SCF_CONV
+    opt_conv=$DEFAULT_OPT_CONV
     solvent=$DEFAULT_SOLVENT
     max_scf=$DEFAULT_MAX_SCF
     cpus=$DEFAULT_CPUS
@@ -233,8 +289,8 @@ parse_cli() {
     qchem_setup_flag=""
 
     local opts
-    opts=$(getopt -o hb:m:c: \
-        --long help,basis:,method:,disp:,ri:,solvent:,max-scf:,cpus:,\
+    opts=$(getopt -o hb:m:c:g: \
+        --long help,basis:,method:,disp:,ri:,grid:,scf-conv:,opt-conv:,solvent:,max-scf:,cpus:,\
 mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
@@ -245,6 +301,9 @@ mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "
             -b|--basis)       basis=$2;             shift 2 ;;
             --disp)           disp_mode=$2;         shift 2 ;;
             --ri)             ri_mode=$2;           shift 2 ;;
+            -g|--grid)        grid=$2;              shift 2 ;;
+            --scf-conv)       scf_conv=$2;          shift 2 ;;
+            --opt-conv)       opt_conv=$2;          shift 2 ;;
             --solvent)        solvent=$2;            shift 2 ;;
             --max-scf)        max_scf=$2;           shift 2 ;;
             -c|--cpus)        cpus=$2;              shift 2 ;;
@@ -269,6 +328,19 @@ mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "
         [[ $# -eq 1 ]] || die "Provide exactly one molecule TAG"
         single_tag=$1
     fi
+
+    case ${grid,,} in
+        coarse|default|fine|ultrafine|sg1|sg2|sg3|1|2|3) ;;
+        *) [[ $grid =~ ^[0-9]{12}$ ]] || die "--grid must be coarse|default|fine|ultrafine, SG1/SG2/SG3, 1/2/3, or a 12-digit XC_GRID code (got '${grid}')" ;;
+    esac
+    case ${scf_conv,,} in
+        default|verytight|extreme) ;;
+        *) die "--scf-conv must be default, verytight, or extreme (got '${scf_conv}')" ;;
+    esac
+    case ${opt_conv,,} in
+        default|tight|verytight) ;;
+        *) die "--opt-conv must be default, tight, or verytight (got '${opt_conv}')" ;;
+    esac
 }
 
 # ============================================================================
@@ -276,9 +348,13 @@ mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "
 # ============================================================================
 write_qchem_input() {
     local cid=$1 xyz_file=$2 inp_file=$3
-    local disp ri
+    local disp ri grid_val scf_val thresh_val opt_lines
     disp=$(disp_line)
     ri=$(ri_lines)
+    grid_val=$(xc_grid_value)
+    scf_val=$(scf_conv_value)
+    thresh_val=$(scf_thresh_value)
+    opt_lines=$(opt_conv_lines)
 
     cat >"$inp_file" <<EOF
 \$comment
@@ -296,10 +372,10 @@ $(tail -n +3 "$xyz_file")
   BASIS               ${basis}
   SOLVENT_METHOD      SMD
   MAX_SCF_CYCLES      ${max_scf}
-  SCF_CONVERGENCE     8
+  SCF_CONVERGENCE     ${scf_val}
   SYM_IGNORE          TRUE
-  THRESH              11
-  XC_GRID             3${disp}${ri}
+  THRESH              ${thresh_val}
+  XC_GRID             ${grid_val}${disp}${ri}${opt_lines}
 \$end
 
 \$smx
@@ -452,15 +528,18 @@ process_tag() {
 print_banner() {
     local disp
     disp=$(disp_line)
+    [[ -n $disp ]] && disp=" D3BJ" || disp=""
     cat >&2 <<EOF
 =============================================================
  Stage 4: Solvent-Phase Geometry Optimization
 -------------------------------------------------------------
  Mode        : ${exec_mode}
  Q-Chem setup: ${qchem_setup:-"(qchem in PATH)"}
- Method      : ${method}
+ Method      : ${method}${disp}
  Basis       : ${basis}
- Dispersion  : ${disp_mode}
+ Grid        : ${grid} (XC_GRID $(xc_grid_value))
+ SCF conv    : ${scf_conv} (SCF_CONVERGENCE $(scf_conv_value))
+ Opt conv    : ${opt_conv}
  Solvent     : ${solvent} (SMD)
  SCF MaxIter : ${max_scf}
  Cores       : ${cpus}

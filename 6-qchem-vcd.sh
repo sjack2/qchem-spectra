@@ -24,15 +24,22 @@
 #
 # Flags:
 #   -m | --method NAME         DFT functional                   [B3LYP]
-#   -b | --basis NAME          Basis set                        [6-31+G(d)]
+#   -b | --basis NAME          Basis set                        [def2-TZVP]
+#   -g | --grid LEVEL          Integration grid: coarse|default|fine|ultrafine [default]
+#                              (also SG1/SG2/SG3 or a 12-digit XC_GRID code)
+#        --disp KW             Dispersion: auto|none|D3BJ        [auto]
 #        --ri KW               Density fitting: none|j|jk        [none]
 #                              (needs a def2 basis, e.g. -b def2-TZVP)
 #        --solvent NAME        SMD solvent keyword               [water]
 #        --max-scf N           Max SCF cycles                    [150]
+#        --scf-conv LEVEL      SCF+CP-SCF convergence: default|verytight|extreme [default]
+#                              (verytight/extreme also raise THRESH to 14)
 #   -c | --cpus N              CPU cores                         [12]
 #        --mem-per-cpu MB      Memory per core in MB             [2048]
 #        --max-running N       Max simultaneous SLURM array tasks [10]
 #        --qchem-setup PATH    Path to Q-Chem setup script       [auto]
+#        --variant LABEL       Suffix the output dir -> 05_vcd_LABEL [none]
+#                              (run grid/functional variants side by side)
 #        --list FILE           File of molecule TAGs
 #        --local               Run Q-Chem directly (no SLURM)
 #        --dry-run             Write inputs but do not run
@@ -83,8 +90,11 @@ IFS=$'\n\t'
 # DEFAULTS
 # ============================================================================
 DEFAULT_METHOD="B3LYP"
-DEFAULT_BASIS="6-31+G(d)"
+DEFAULT_BASIS="def2-TZVP"
+DEFAULT_DISP="auto"
 DEFAULT_RI="none"
+DEFAULT_GRID="default"
+DEFAULT_SCF_CONV="default"
 DEFAULT_SOLVENT="water"
 DEFAULT_MAX_SCF=150
 DEFAULT_CPUS=4
@@ -199,13 +209,32 @@ read_xyz_header() {
 }
 
 # ============================================================================
+# DISPERSION LOGIC
+# ============================================================================
+disp_line() {
+    local method_upper=${method^^}
+    case $disp_mode in
+        none|NONE) printf '' ;;
+        D3BJ|d3bj) printf '\n  DFT_D              D3_BJ' ;;
+        auto|AUTO)
+            if [[ $method =~ (-D[0-9]?|-D3BJ|-D3ZERO|-D4)($|[[:space:]]) ]]; then
+                printf ''; return; fi
+            case $method_upper in
+                WB97X-D|WB97X-D3|WB97X-D4|WB97X-V|WB97XD|WB97M-V|B97-D|B97-D3)
+                    printf ''; return ;; esac
+            printf '\n  DFT_D              D3_BJ' ;;
+        *) die "--disp must be auto, none, or D3BJ" ;;
+    esac
+}
+
+# ============================================================================
 # RI / DENSITY-FITTING LOGIC
 # ============================================================================
 # Setting AUX_BASIS_J both selects the J-fitting auxiliary basis AND switches
 # RI-J on (ORCA applies this automatically with def2/J; Q-Chem does not).
 # Auxiliary names follow the RIJ-<basis> / RIJK-<basis> convention (Q-Chem
-# manual Table 8.9), auto-derived only for the def2 family. NOTE: this script's
-# default basis is 6-31+G(d) (not def2), so --ri requires passing a def2 basis.
+# manual Table 8.9), auto-derived only for the def2 family. The default basis is
+# def2-TZVP, so --ri works without overriding the basis.
 ri_lines() {
     case $ri_mode in
         none|NONE) printf '' ;;
@@ -222,12 +251,59 @@ ri_lines() {
 }
 
 # ============================================================================
+# INTEGRATION-GRID LOGIC
+# ============================================================================
+# Maps a user-facing grid level to a Q-Chem XC_GRID value. Named tiers give a
+# vocabulary that is consistent across engines and stages (see README); the
+# standard SG grids and a raw 12-digit XC_GRID code are also accepted.
+#   coarse    -> SG-1                                (fast, GGA-grade)
+#   default   -> SG-3   (pruned 99,590)              [Q-Chem default; unchanged]
+#   fine      -> 000099000590  (UNPRUNED 99,590)     (converged; campaign)
+#   ultrafine -> 000099000974  (UNPRUNED 99,974)     (convergence check)
+# In Q-Chem XC_GRID drives the SCF, the CP-SCF response (VCD AAT) and the
+# Hessian alike, so one value converges the whole VCD calculation.
+xc_grid_value() {
+    case ${grid,,} in
+        coarse)    printf '1' ;;
+        default)   printf '3' ;;
+        fine)      printf '000099000590' ;;
+        ultrafine) printf '000099000974' ;;
+        sg1|1)     printf '1' ;;
+        sg2|2)     printf '2' ;;
+        sg3|3)     printf '3' ;;
+        *)         printf '%s' "$grid" ;;   # validated 12-digit code (parse_cli)
+    esac
+}
+
+# ============================================================================
+# SCF + CP-SCF CONVERGENCE LOGIC
+# ============================================================================
+# Named convergence tiers, consistent across engines (see README). In Q-Chem the
+# analytic FREQ/VCD CPKS (which yields the AAT) shares the SCF + integral
+# thresholds, so tightening SCF_CONVERGENCE + THRESH is the CP-SCF lever. The
+# manual requires THRESH >= SCF_CONVERGENCE + 3 (THRESH caps at 14).
+#   default   -> SCF_CONVERGENCE 8                 [Q-Chem vibrational default]
+#   verytight -> SCF_CONVERGENCE 10 + THRESH 14
+#   extreme   -> SCF_CONVERGENCE 11 + THRESH 14
+scf_conv_value() {
+    case ${scf_conv,,} in
+        default)   printf '8' ;;
+        verytight) printf '10' ;;
+        extreme)   printf '11' ;;
+        *)         printf '8' ;;   # validated in parse_cli
+    esac
+}
+
+# ============================================================================
 # CLI PARSER
 # ============================================================================
 parse_cli() {
     method=$DEFAULT_METHOD
     basis=$DEFAULT_BASIS
     ri_mode=$DEFAULT_RI
+    disp_mode=$DEFAULT_DISP
+    grid=$DEFAULT_GRID
+    scf_conv=$DEFAULT_SCF_CONV
     solvent=$DEFAULT_SOLVENT
     max_scf=$DEFAULT_MAX_SCF
     cpus=$DEFAULT_CPUS
@@ -240,10 +316,11 @@ parse_cli() {
     list_file=""
     single_tag=""
     qchem_setup_flag=""
+    variant=""
 
     local opts
-    opts=$(getopt -o hb:m:c: \
-        --long help,method:,basis:,ri:,solvent:,max-scf:,cpus:,\
+    opts=$(getopt -o hb:m:c:g: \
+        --long help,method:,basis:,ri:,disp:,grid:,variant:,solvent:,max-scf:,scf-conv:,cpus:,\
 mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
@@ -253,8 +330,12 @@ mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "
             -m|--method)      method=$2;             shift 2 ;;
             -b|--basis)       basis=$2;              shift 2 ;;
             --ri)             ri_mode=$2;            shift 2 ;;
+            --disp)           disp_mode=$2;          shift 2 ;;
+            -g|--grid)        grid=$2;               shift 2 ;;
+            --variant)        variant=$2;            shift 2 ;;
             --solvent)        solvent=$2;            shift 2 ;;
             --max-scf)        max_scf=$2;            shift 2 ;;
+            --scf-conv)       scf_conv=$2;           shift 2 ;;
             -c|--cpus)        cpus=$2;               shift 2 ;;
             --mem-per-cpu)    mem_mb=$2;             shift 2 ;;
             --max-running)    max_running=$2;        shift 2 ;;
@@ -277,6 +358,23 @@ mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "
         [[ $# -eq 1 ]] || die "Provide exactly one molecule TAG"
         single_tag=$1
     fi
+
+    # validate --grid (named tier, SG grid, or a 12-digit XC_GRID code)
+    case ${grid,,} in
+        coarse|default|fine|ultrafine|sg1|sg2|sg3|1|2|3) ;;
+        *) [[ $grid =~ ^[0-9]{12}$ ]] || die "--grid must be coarse|default|fine|ultrafine, SG1/SG2/SG3, 1/2/3, or a 12-digit XC_GRID code (got '${grid}')" ;;
+    esac
+
+    # validate --variant (optional filesystem-safe output-dir suffix)
+    if [[ -n $variant ]]; then
+        [[ $variant =~ ^[A-Za-z0-9._-]+$ ]] || die "--variant must contain only letters, digits, . _ - (got '${variant}')"
+    fi
+
+    # validate --scf-conv (named convergence tier)
+    case ${scf_conv,,} in
+        default|verytight|extreme) ;;
+        *) die "--scf-conv must be default, verytight, or extreme (got '${scf_conv}')" ;;
+    esac
 }
 
 # ============================================================================
@@ -285,8 +383,12 @@ mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "
 write_qchem_input() {
     local cid=$1 xyz_file=$2 inp_file=$3
     local mem_total=$(( cpus * mem_mb ))
-    local ri
+    local ri disp grid_val scf_val thresh_line
     ri=$(ri_lines)
+    disp=$(disp_line)
+    grid_val=$(xc_grid_value)
+    scf_val=$(scf_conv_value)
+    [[ ${scf_conv,,} == default ]] && thresh_line="" || thresh_line=$'\n  THRESH              14'
 
     cat >"$inp_file" <<EOF
 \$comment
@@ -306,9 +408,9 @@ $(tail -n +3 "$xyz_file")
   RAMAN               TRUE
   SOLVENT_METHOD      SMD
   MAX_SCF_CYCLES      ${max_scf}
-  SCF_CONVERGENCE     8
+  SCF_CONVERGENCE     ${scf_val}${thresh_line}
   SYM_IGNORE          TRUE
-  XC_GRID             3
+  XC_GRID             ${grid_val}${disp}
   MEM_TOTAL           ${mem_total}
   MEM_STATIC          500${ri}
 \$end
@@ -510,18 +612,24 @@ process_tag() {
 # SUMMARY BANNER
 # ============================================================================
 print_banner() {
+    local disp
+    disp=$(disp_line)
+    [[ -n $disp ]] && disp=" D3BJ" || disp=""
     cat >&2 <<EOF
 =============================================================
  Stage 6-vcd: Frequency Calculation (IR + VCD)
 -------------------------------------------------------------
  Mode         : ${exec_mode}
  Q-Chem setup : ${qchem_setup:-<qchem in PATH>}
- Method       : ${method}
+ Method       : ${method}${disp}
  Basis        : ${basis}
+ Grid         : ${grid} (XC_GRID $(xc_grid_value))
  Solvent      : ${solvent} (SMD)
  Max SCF      : ${max_scf}
+ SCF conv     : ${scf_conv} (SCF_CONVERGENCE $(scf_conv_value))
  Cores        : ${cpus}
  Mem/core     : ${mem_mb} MB
+ Output dir   : <TAG>/${OUT_SUBDIR}
  Max running  : ${max_running} (SLURM array throttle)
  Dry run      : ${dry_run}
 =============================================================
@@ -534,6 +642,10 @@ EOF
 main() {
     source_cluster_cfg
     parse_cli "$@"
+
+    # --variant suffixes the output dir (e.g. 05_vcd_fine) so grid/functional
+    # variants of this stage can coexist and run concurrently without clobbering.
+    [[ -n $variant ]] && OUT_SUBDIR="${OUT_SUBDIR}_${variant}"
 
     exec_mode=$(detect_mode "$force_local")
     qchem_setup=$(resolve_qchem_setup "$qchem_setup_flag")

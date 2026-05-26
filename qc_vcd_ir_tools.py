@@ -349,7 +349,7 @@ def _plot(
     ax.set_xlabel(r"Wavenumber / cm$^{-1}$")
     ax.set_ylabel("Rotatory strength (arb.)" if signed else "Intensity (arb.)")
     if title:
-        ax.set_title(title, fontsize=10)
+        ax.set_title(title, fontsize=10, wrap=True)
 
     fig.tight_layout()
     fig.savefig(png, dpi=300)
@@ -445,9 +445,15 @@ def _cli() -> None:
     # -------------------------------------------------------------- #
     #   Load Boltzmann weights                                        #
     # -------------------------------------------------------------- #
-    weights: Dict[str, float] = {Path(f).stem: 1.0 for f in log_files}
+    # The --bw file is the post-dedup keep-list: when given, restrict to its
+    # conformers so dedup'd-out duplicates aren't summed in at the default 1.0.
     if args.bw_file:
-        weights.update(load_weights(args.bw_file))
+        weights = load_weights(args.bw_file)
+        log_files = [f for f in log_files if Path(f).stem in weights]
+        if not log_files:
+            raise SystemExit("No .out files match the Boltzmann keep-list.")
+    else:
+        weights = {Path(f).stem: 1.0 for f in log_files}
 
     # -------------------------------------------------------------- #
     #   Aggregate transitions                                         #

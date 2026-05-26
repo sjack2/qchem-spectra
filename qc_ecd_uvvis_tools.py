@@ -313,7 +313,7 @@ def _make_plot(
         if max_abs > 0:
             ax.set_ylim(-max_abs * 1.2, max_abs * 1.2)
     if title:
-        ax.set_title(title, fontsize=10)
+        ax.set_title(title, fontsize=10, wrap=True)
 
     fig.tight_layout()
     fig.savefig(outfile_png, dpi=300)
@@ -431,12 +431,15 @@ def _cli() -> None:
     # ------------------------------------------------------------------ #
     #   Boltzmann weights                                                 #
     # ------------------------------------------------------------------ #
-    weights: Dict[str, float] = {Path(f).stem: 1.0 for f in log_files}
+    # The --bw file is the post-dedup keep-list: when given, restrict to its
+    # conformers so dedup'd-out duplicates aren't summed in at the default 1.0.
     if args.bw_file:
-        bw_map = _load_weights(args.bw_file)
-        for cid in weights:
-            if cid in bw_map:
-                weights[cid] = bw_map[cid]
+        weights = _load_weights(args.bw_file)
+        log_files = [f for f in log_files if Path(f).stem in weights]
+        if not log_files:
+            raise SystemExit("No .out files match the Boltzmann keep-list.")
+    else:
+        weights = {Path(f).stem: 1.0 for f in log_files}
 
     # ------------------------------------------------------------------ #
     #   Aggregate all transitions                                         #
@@ -475,7 +478,9 @@ def _cli() -> None:
     fwhm_to_sigma = lambda f: f / (2.0 * np.sqrt(2.0 * np.log(2.0)))
     sigma_uv = fwhm_to_sigma(args.uv_fwhm)
     sigma_ecd = fwhm_to_sigma(args.ecd_fwhm)
-    title = None if args.no_title else (args.title if args.title else Path(prefix).name.replace("_", " "))
+    _base = args.title if args.title else Path(prefix).name.replace("_", " ")
+    title_uv = None if args.no_title else f"{_base} UV-Vis Spectrum"
+    title_ecd = None if args.no_title else f"{_base} ECD Spectrum"
 
     _make_plot(
         uv_df,
@@ -487,7 +492,7 @@ def _cli() -> None:
         y_limits=tuple(args.uv_ylim) if args.uv_ylim else None,
         sticks=args.stick,
         is_ecd=False,
-        title=title,
+        title=title_uv,
         flip_x=args.flip_x,
         scale=1.0,
     )
@@ -502,7 +507,7 @@ def _cli() -> None:
         y_limits=tuple(args.ecd_ylim) if args.ecd_ylim else None,
         sticks=args.stick,
         is_ecd=True,
-        title=title,
+        title=title_ecd,
         flip_x=args.flip_x,
         scale=1.0,
     )

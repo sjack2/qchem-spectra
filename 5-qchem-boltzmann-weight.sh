@@ -116,13 +116,21 @@ extract_energies() {
         return
     fi
 
+    # honor the Stage-4b dedup keep-list (unique conformers) when present
+    local keep_file="${opt_dir}/${tag}_unique.dat"
+    [[ -f $keep_file ]] && \
+        log "[${tag}] honoring dedup keep-list ($(wc -l < "$keep_file") unique conformers)"
+
     # find all Q-Chem output files and extract the final energy from each
     while IFS= read -r outfile; do
         local energy_line cid energy
+        cid=$(basename "${outfile%.*}")
+        if [[ -f $keep_file ]] && ! tr -d '\r' < "$keep_file" | grep -qxF "$cid"; then
+            continue
+        fi
         energy_line=$(grep 'Final energy is' "$outfile" | tail -n1) || true
         [[ -n $energy_line ]] || continue
         energy=$(awk '{print $NF}' <<< "$energy_line")
-        cid=$(basename "${outfile%.*}")
         printf '%s\t%s\n' "$cid" "$energy"
     done < <(find "$opt_dir" -type f -name '*.out' | sort)
 }

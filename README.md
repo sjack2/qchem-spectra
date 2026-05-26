@@ -47,8 +47,8 @@ Stage 6-tddft                            Stage 6-vcd
   |                                          |
   v                                          v
 Plot                                     Plot
-  Broadened UV-Vis & ECD spectra           Broadened IR & VCD spectra
-  qc_ecd_uvvis_tools.py                    qc_vcd_ir_tools.py
+  Broadened UV-Vis & ECD spectra           Broadened IR, VCD & Raman spectra
+  qc_ecd_uvvis_tools.py                    qc_vcd_ir_tools.py + qc_raman_tools.py
 ```
 
 Stages 1, 4, and 5 are shared. Stages 2/2b and 3/3b are interchangeable: both produce per-conformer XYZ files in `<TAG>/02_conf_search/split_xyz/` consumed by Stage 4. After Boltzmann filtering, the pipeline branches: run `6-qchem-tddft.sh` for electronic spectra, `6-qchem-vcd.sh` for vibrational spectra, or both.
@@ -154,7 +154,7 @@ Both `charge=0 mult=1` (key=value) and `0 1` (bare integers) are accepted. If ne
 
 # --- Electronic spectra branch ---
 # Stage 6-tddft: TD-DFT on populated conformers
-./6-qchem-tddft.sh --local --cpus 4 --method CAM-B3LYP --roots 30 pna
+./6-qchem-tddft.sh --local --cpus 4 --method wB97X-D3 --roots 30 pna
 
 # Plot UV-Vis & ECD spectra
 python3 qc_ecd_uvvis_tools.py pna/05_tddft \
@@ -237,6 +237,7 @@ aspirin/
     |-- aspirin_ecd.png
     |-- aspirin_ir.png
     |-- aspirin_vcd.png
+    |-- aspirin_raman.png
     `-- *.csv / *.pdf
 ```
 
@@ -271,8 +272,10 @@ All scripts accept `--help` for full usage. Flags shown with `[default]`.
 | `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `auto` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--max-iter N` | | SCF iteration limit | `150` |
-| `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
-| `--grid KW` | `-g` | Integration grid: `SG1`, `SG2`, `SG3` | `SG3` |
+| `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
+| `--grid LEVEL` | `-g` | Integration grid: `coarse`/`default`/`fine`/`ultrafine` (also `SG1/2/3` or a 12-digit code; see [Convergence & Grid Tiers](#convergence--grid-tiers)) | `default` |
+| `--scf-conv LEVEL` | | SCF convergence: `default`/`verytight`/`extreme` | `default` |
+| `--opt-conv LEVEL` | | Geometry convergence: `default`/`tight`/`verytight` | `default` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
 | `--qchem-setup PATH` | | Path to Q-Chem setup script | _auto-detected_ |
 | `--list FILE` | | Text file of TAGs (one per line) | |
@@ -363,18 +366,21 @@ Reads `crest_conformers.xyz` produced by Stage 2b and splits it into numbered pe
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
 | `--method NAME` | `-m` | DFT functional | `B3LYP` |
-| `--basis NAME` | `-b` | Basis set | `6-31+G(d)` |
-| `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `none` |
+| `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
+| `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `auto` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--solvent NAME` | | SMD solvent keyword | `water` |
 | `--max-scf N` | | Max SCF cycles | `150` |
-| `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
+| `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
 | `--max-running N` | | Max concurrent array tasks _(HPC only)_ | `10` |
 | `--qchem-setup PATH` | | Path to Q-Chem setup script | _auto-detected_ |
 | `--list FILE` | | Text file of TAGs | |
 | `--local` | | Run Q-Chem directly (no SLURM) | |
 | `--dry-run` | | Write inputs without running | |
+| `--grid LEVEL` | `-g` | Integration grid: `coarse`/`default`/`fine`/`ultrafine` (see [Convergence & Grid Tiers](#convergence--grid-tiers)) | `default` |
+| `--scf-conv LEVEL` | | SCF convergence: `default`/`verytight`/`extreme` | `default` |
+| `--opt-conv LEVEL` | | Geometry convergence: `default`/`tight`/`verytight` | `default` |
 | `--partition NAME` | | SLURM partition _(HPC only)_ | `general` |
 | `--time HH:MM:SS` | | SLURM wall-clock limit _(HPC only)_ | `02:00:00` |
 
@@ -409,19 +415,22 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
-| `--method NAME` | `-m` | TD-DFT functional | `CAM-B3LYP` |
-| `--basis NAME` | `-b` | Basis set | `def2-SVP` |
+| `--method NAME` | `-m` | TD-DFT functional | `wB97X-D3` |
+| `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--roots N` | | Number of excited states | `30` |
 | `--solvent NAME` | | SMD solvent keyword | `water` |
 | `--max-scf N` | | Max SCF cycles | `150` |
-| `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
+| `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
 | `--max-running N` | | Max concurrent array tasks _(HPC only)_ | `10` |
 | `--qchem-setup PATH` | | Path to Q-Chem setup script | _auto-detected_ |
 | `--list FILE` | | Text file of TAGs | |
 | `--local` | | Run Q-Chem directly (no SLURM) | |
 | `--dry-run` | | Write inputs without running | |
+| `--grid LEVEL` | `-g` | Integration grid: `coarse`/`default`/`fine`/`ultrafine` (see [Convergence & Grid Tiers](#convergence--grid-tiers)) | `default` |
+| `--scf-conv LEVEL` | | SCF convergence: `default`/`verytight`/`extreme` | `default` |
+| `--variant LABEL` | | Suffix output dir → `05_tddft_LABEL` (run variants side by side) | |
 | `--partition NAME` | | SLURM partition _(HPC only)_ | `general` |
 | `--time HH:MM:SS` | | SLURM wall-clock limit _(HPC only)_ | `04:00:00` |
 
@@ -439,17 +448,21 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
 | `--method NAME` | `-m` | DFT functional | `B3LYP` |
-| `--basis NAME` | `-b` | Basis set | `6-31+G(d)` |
+| `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
+| `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `auto` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--solvent NAME` | | SMD solvent keyword | `water` |
 | `--max-scf N` | | Max SCF cycles | `150` |
-| `--cpus N` | `-c` | CPU cores (OpenMP threads) | `12` |
+| `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
 | `--max-running N` | | Max concurrent array tasks _(HPC only)_ | `10` |
 | `--qchem-setup PATH` | | Path to Q-Chem setup script | _auto-detected_ |
 | `--list FILE` | | Text file of TAGs | |
 | `--local` | | Run Q-Chem directly (no SLURM) | |
 | `--dry-run` | | Write inputs without running | |
+| `--grid LEVEL` | `-g` | Integration grid: `coarse`/`default`/`fine`/`ultrafine` (see [Convergence & Grid Tiers](#convergence--grid-tiers)) | `default` |
+| `--scf-conv LEVEL` | | SCF + CP-SCF convergence: `default`/`verytight`/`extreme` | `default` |
+| `--variant LABEL` | | Suffix output dir → `05_vcd_LABEL` (run variants side by side) | |
 | `--partition NAME` | | SLURM partition _(HPC only)_ | `general` |
 | `--time HH:MM:SS` | | SLURM wall-clock limit _(HPC only)_ | `06:00:00` |
 
@@ -523,6 +536,42 @@ python3 qc_vcd_ir_tools.py ephedrine/05_vcd \
     --outdir ephedrine --vcd_fwhm 8 --ir_fwhm 12
 ```
 
+### qc_raman_tools.py -- Raman Spectral Broadening & Plotting
+
+```
+qc_raman_tools.py [OPTIONS] LOGS [LOGS ...]
+```
+
+`LOGS` can be individual `.out` files, glob patterns, or directories (searched recursively). Raman
+activities come from the same Stage-6-vcd frequency outputs (`RAMAN TRUE` is on by default in
+`6-qchem-vcd.sh`), so no extra calculation is needed.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--bw PATH` | Boltzmann weight file (`_energies.dat` from Stage 5) | _equal weights_ |
+| `--outdir TAG` | Molecule directory; outputs go to `<TAG>/06_spectra/<TAG>_*` | |
+| `--prefix STR` | Explicit output prefix (overrides `--outdir`) | `vib` |
+| `--raman_fwhm CM` | Gaussian FWHM for Raman (cm-1) | `10` |
+| `--xlim MIN MAX` | Wavenumber range (cm-1) | _auto_ |
+| `--ylim YMIN YMAX` | y-axis limits | _auto_ |
+| `--stick` | Overlay stick spectrum | _off_ |
+| `--no_title` | Suppress figure titles | _off_ |
+| `--title STR` | Custom figure title base (overrides auto-generated title from prefix) | _auto_ |
+
+The Raman-shift axis is plotted **low-to-high** (increasing left-to-right), the conventional Raman
+orientation and the opposite of the IR/VCD axis.
+
+**Output:** `<TAG>/06_spectra/<TAG>_raman.png/.pdf/.csv`
+
+**Example:**
+
+```bash
+# Boltzmann-weighted Raman for methyloxirane
+python3 qc_raman_tools.py methyloxirane/05_vcd \
+    --bw methyloxirane/04_boltzmann/methyloxirane_energies.dat \
+    --outdir methyloxirane --xlim 800 3500
+```
+
 ---
 
 ## Supported Q-Chem Options
@@ -548,8 +597,8 @@ The `--basis` flag accepts any Q-Chem basis set keyword. By default Q-Chem evalu
 | Basis | Quality | Typical Use |
 |-------|---------|-------------|
 | `def2-SVP` | Double-zeta | Gas-phase geometry optimization |
-| `6-31+G(d)` | Double-zeta + diffuse | Solvent-phase optimization, VCD frequencies |
-| `def2-TZVP` | Triple-zeta | TD-DFT production runs |
+| `6-31+G(d)` | Double-zeta + diffuse | Pople alternative (optional; not a default) |
+| `def2-TZVP` | Triple-zeta | Solvent-phase opt, TD-DFT, IR/VCD frequencies |
 | `6-311+G(d,p)` | Triple-zeta + diffuse | Basis set convergence checks |
 
 ### Solvents
@@ -566,8 +615,8 @@ The `--disp` flag controls how dispersion is applied. In Q-Chem, dispersion is s
 
 | Value | Behavior |
 |-------|-----------|
-| `auto` _(default for Stage 1)_ | Detects whether the functional already includes dispersion (e.g., wB97X-**D3**). If not, adds D3(BJ). |
-| `none` _(default for Stage 4)_ | No dispersion correction. |
+| `auto` _(default for Stages 1, 4, 6b)_ | Detects whether the functional already includes dispersion (e.g., wB97X-**D3**). If not, adds D3(BJ). |
+| `none` | No dispersion correction. |
 | `D3BJ` | Grimme's D3 with Becke-Johnson damping (`DFT_D D3_BJ` in `$rem`). |
 
 ### Density Fitting (RI)
@@ -580,9 +629,42 @@ The `--ri` flag enables the resolution-of-identity (RI, a.k.a. density fitting) 
 | `j` | RI-J on the Coulomb term: `AUX_BASIS_J RIJ-<basis>`. Equivalent to ORCA's `def2/J`. |
 | `jk` | RI-J and RI-K: `AUX_BASIS_J` and `AUX_BASIS_K` set to `RIJK-<basis>`. |
 
-The auxiliary basis name is auto-derived from the orbital basis (e.g. `def2-TZVP` -> `RIJ-def2-TZVP`), so **`--ri` requires a `def2-*` orbital basis**. Pass `-b def2-TZVP` (or similar) when combining `--ri` with a script whose default basis is a Pople set such as `6-31+G(d)`; otherwise the script exits with a descriptive error.
+The auxiliary basis name is auto-derived from the orbital basis (e.g. `def2-TZVP` -> `RIJ-def2-TZVP`), so **`--ri` requires a `def2-*` orbital basis**. Pass `-b def2-TZVP` (or similar) when combining `--ri` with a non-def2 orbital basis (e.g. a Pople set like `6-31+G(d)`); otherwise the script exits with a descriptive error.
 
 **Note on frequencies / VCD:** RI-J is well established for SCF energies and gradients, but its interaction with the analytic Hessian and atomic axial tensors (VCD) is less universally validated. Test `--ri j` on a small molecule (e.g. methyloxirane) and confirm the frequencies and rotatory strengths look sane before relying on it for a production VCD set.
+
+### Convergence & Grid Tiers
+
+Four flags expose numerical-precision control with a vocabulary shared across stages (and with the companion ORCA workflow, so a level means the same thing on both engines). Every flag defaults to `default`, which reproduces the original pipeline settings — existing runs are unaffected.
+
+**`--grid` (all stages)** — DFT integration grid (`XC_GRID`). In Q-Chem one value drives the SCF, the CP-SCF response (VCD's atomic axial tensor) and the Hessian alike:
+
+| Level | `XC_GRID` | Notes |
+|-------|-----------|-------|
+| `coarse` | SG-1 | fast, GGA-grade |
+| `default` | SG-3 (pruned 99,590) | Q-Chem default |
+| `fine` | `000099000590` | unpruned (99,590) |
+| `ultrafine` | `000099000974` | unpruned (99,974) |
+
+`SG1`/`SG2`/`SG3` and a raw 12-digit `XC_GRID` code are also accepted.
+
+**`--scf-conv` (all stages)** — SCF convergence; `verytight`/`extreme` also raise `THRESH` to 14 (the manual requires `THRESH ≥ SCF_CONVERGENCE + 3`). In Stage 6b this tightens the analytic-derivative / CP-SCF accuracy behind the VCD rotatory strengths:
+
+| Level | `SCF_CONVERGENCE` | `THRESH` |
+|-------|-------------------|----------|
+| `default` | 8 | stage default |
+| `verytight` | 10 | 14 |
+| `extreme` | 11 | 14 |
+
+**`--opt-conv` (Stages 1 & 4 only)** — geometry-optimization thresholds (`GEOM_OPT_TOL_*`, in 10⁻⁶/10⁻⁶/10⁻⁸ a.u.; chosen to match ORCA's `TightOpt`/`VeryTightOpt`):
+
+| Level | `GRADIENT` | `DISPLACEMENT` | `ENERGY` |
+|-------|------------|----------------|----------|
+| `default` | 300 | 1200 | 100 |
+| `tight` | 100 | 1000 | 100 |
+| `verytight` | 30 | 200 | 20 |
+
+**`--variant LABEL` (Stages 6a & 6b only)** — suffixes the output directory (`05_vcd_LABEL`, `05_tddft_LABEL`) so several grid / functional / convergence variants of a stage can coexist and run concurrently without overwriting each other. Point the plotting tools at the variant directory via their input-path argument. Not offered on Stages 1/4, whose output-directory names are consumed by downstream stages.
 
 ---
 
@@ -672,12 +754,12 @@ The `pre_xyz/` directory includes starting geometries for several test molecules
 **Session 2 -- Flexible chiral molecules (ECD + conformational averaging):**
 - `ephedrine.xyz` -- (1R,2S)-ephedrine (amino alcohol, 4-10 conformers)
 - `norephedrine.xyz` -- (1S,2R)-norephedrine (amino alcohol)
-- `methyloxirane.xyz` -- (R)-methyloxirane (propylene oxide, small chiral reference)
+- `methyloxirane.xyz` -- (S)-methyloxirane (propylene oxide, small chiral reference)
 - `phenylethan1ol.xyz` -- (S)-1-phenylethan-1-ol (alpha-methylbenzyl alcohol)
 - `sparteine.xyz` -- (-)-sparteine (tetracyclic alkaloid, large conformer space)
 
 **Session 3 -- Vibrational chiroptical spectroscopy (VCD):**
-- `methyloxirane.xyz` -- (R)-methyloxirane (the canonical VCD benchmark, rigid)
+- `methyloxirane.xyz` -- (S)-methyloxirane (the canonical VCD benchmark, rigid)
 - `phenylethan1ol.xyz` -- (S)-1-phenylethan-1-ol (moderate flexibility, VCD literature reference)
 
 ---

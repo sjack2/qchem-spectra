@@ -26,7 +26,10 @@
 #        --ri {none,j,jk}          Density fitting (def2 only)   [none]
 #        --max-iter N              SCF iteration limit           [150]
 #   -c | --cpus N                  CPU cores (threads + SLURM)  [12]
-#   -g | --grid {SG1,SG2,SG3}     Integration grid              [SG3]
+#   -g | --grid LEVEL              Integration grid: coarse|default|fine|ultrafine [default]
+#                                  (also SG1/SG2/SG3 or a 12-digit XC_GRID code)
+#        --scf-conv LEVEL          SCF convergence: default|verytight|extreme [default]
+#        --opt-conv LEVEL          Geometry convergence: default|tight|verytight [default]
 #        --mem-per-cpu MB          Memory per core in MB         [2048]
 #        --qchem-setup PATH        Path to Q-Chem setup script   [auto]
 #        --list FILE               File of TAGs or XYZ paths
@@ -82,7 +85,9 @@ DEFAULT_DISP="auto"
 DEFAULT_RI="none"
 DEFAULT_MAX_ITER=150
 DEFAULT_CPUS=4
-DEFAULT_GRID="SG3"
+DEFAULT_GRID="default"
+DEFAULT_SCF_CONV="default"
+DEFAULT_OPT_CONV="default"
 DEFAULT_MEM_PER_CPU=2048
 DEFAULT_PARTITION="general"
 DEFAULT_WALL="02:00:00"
@@ -200,16 +205,35 @@ read_xyz_header() {
 }
 
 # ============================================================================
-# GRID LOGIC
+# GRID / SCF / GEOMETRY-CONVERGENCE LOGIC
 # ============================================================================
-# Maps user-facing grid names (SG1/SG2/SG3) to Q-Chem XC_GRID integer.
-# Also accepts bare integers 1-3 for convenience.
-grid_number() {
-    case ${grid^^} in
-        SG1|1) printf '1' ;;
-        SG2|2) printf '2' ;;
-        SG3|3) printf '3' ;;
-        *)     die "--grid must be SG1, SG2, or SG3 (got '${grid}')" ;;
+# Named tiers, consistent across engines and stages (see README). One XC_GRID
+# value drives the calc; SCF_CONVERGENCE+THRESH (appended only when tightened)
+# set SCF accuracy; GEOM_OPT_TOL_* set geometry convergence (1e-6/1e-6/1e-8 a.u.).
+xc_grid_value() {
+    case ${grid,,} in
+        coarse)    printf '1' ;;
+        default)   printf '3' ;;
+        fine)      printf '000099000590' ;;
+        ultrafine) printf '000099000974' ;;
+        sg1|1)     printf '1' ;;
+        sg2|2)     printf '2' ;;
+        sg3|3)     printf '3' ;;
+        *)         printf '%s' "$grid" ;;   # validated 12-digit code (parse_cli)
+    esac
+}
+scf_conv_lines() {
+    case ${scf_conv,,} in
+        verytight) printf '  SCF_CONVERGENCE      10\n  THRESH               14' ;;
+        extreme)   printf '  SCF_CONVERGENCE      11\n  THRESH               14' ;;
+        *)         printf '' ;;
+    esac
+}
+opt_conv_lines() {
+    case ${opt_conv,,} in
+        tight)     printf '  GEOM_OPT_TOL_GRADIENT      100\n  GEOM_OPT_TOL_DISPLACEMENT  1000\n  GEOM_OPT_TOL_ENERGY        100' ;;
+        verytight) printf '  GEOM_OPT_TOL_GRADIENT       30\n  GEOM_OPT_TOL_DISPLACEMENT   200\n  GEOM_OPT_TOL_ENERGY         20' ;;
+        *)         printf '' ;;
     esac
 }
 
@@ -277,6 +301,8 @@ parse_cli() {
     max_iter=$DEFAULT_MAX_ITER
     cpus=$DEFAULT_CPUS
     grid=$DEFAULT_GRID
+    scf_conv=$DEFAULT_SCF_CONV
+    opt_conv=$DEFAULT_OPT_CONV
     mem_mb=$DEFAULT_MEM_PER_CPU
     partition=${CLUSTER_PARTITION:-$DEFAULT_PARTITION}
     wall=${CLUSTER_WALL:-$DEFAULT_WALL}
@@ -288,7 +314,7 @@ parse_cli() {
 
     local opts
     opts=$(getopt -o hb:m:c:g: \
-        --long help,basis:,method:,disp:,ri:,max-iter:,cpus:,grid:,\
+        --long help,basis:,method:,disp:,ri:,max-iter:,cpus:,grid:,scf-conv:,opt-conv:,\
 mem-per-cpu:,partition:,time:,list:,dry-run,local,qchem-setup: -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
@@ -302,6 +328,8 @@ mem-per-cpu:,partition:,time:,list:,dry-run,local,qchem-setup: -- "$@") \
             --max-iter)       max_iter=$2;           shift 2 ;;
             -c|--cpus)        cpus=$2;               shift 2 ;;
             -g|--grid)        grid=$2;               shift 2 ;;
+            --scf-conv)       scf_conv=$2;           shift 2 ;;
+            --opt-conv)       opt_conv=$2;           shift 2 ;;
             --mem-per-cpu)    mem_mb=$2;             shift 2 ;;
             --partition)      partition=$2;           shift 2 ;;
             --time)           wall=$2;               shift 2 ;;
@@ -328,6 +356,19 @@ mem-per-cpu:,partition:,time:,list:,dry-run,local,qchem-setup: -- "$@") \
         fi
         require_file "$xyz_arg"
     fi
+
+    case ${grid,,} in
+        coarse|default|fine|ultrafine|sg1|sg2|sg3|1|2|3) ;;
+        *) [[ $grid =~ ^[0-9]{12}$ ]] || die "--grid must be coarse|default|fine|ultrafine, SG1/SG2/SG3, 1/2/3, or a 12-digit XC_GRID code (got '${grid}')" ;;
+    esac
+    case ${scf_conv,,} in
+        default|verytight|extreme) ;;
+        *) die "--scf-conv must be default, verytight, or extreme (got '${scf_conv}')" ;;
+    esac
+    case ${opt_conv,,} in
+        default|tight|verytight) ;;
+        *) die "--opt-conv must be default, tight, or verytight (got '${opt_conv}')" ;;
+    esac
 }
 
 # ============================================================================
@@ -335,10 +376,12 @@ mem-per-cpu:,partition:,time:,list:,dry-run,local,qchem-setup: -- "$@") \
 # ============================================================================
 write_qchem_input() {
     local inp_file=$1 xyz_file=$2
-    local disp grid_num ri
+    local disp grid_val ri scf_extra opt_extra
     disp=$(disp_line)
-    grid_num=$(grid_number)
+    grid_val=$(xc_grid_value)
     ri=$(ri_lines)
+    scf_extra=$(scf_conv_lines)
+    opt_extra=$(opt_conv_lines)
 
     cat >"$inp_file" <<EOF
 \$rem
@@ -347,7 +390,7 @@ write_qchem_input() {
   BASIS                ${basis}
   SCF_ALGORITHM        DIIS_GDM
   MAX_SCF_CYCLES       ${max_iter}
-  XC_GRID              ${grid_num}
+  XC_GRID              ${grid_val}
   XC_SMART_GRID        TRUE
   GEN_SCFMAN           TRUE
   MEM_TOTAL            $(( cpus * mem_mb ))
@@ -362,6 +405,10 @@ EOF
     if [[ -n $ri ]]; then
         echo "${ri}" >>"$inp_file"
     fi
+
+    # append tightened SCF / geometry-convergence lines only if requested
+    [[ -n $scf_extra ]] && echo "${scf_extra}" >>"$inp_file"
+    [[ -n $opt_extra ]] && echo "${opt_extra}" >>"$inp_file"
 
     cat >>"$inp_file" <<EOF
 \$end
@@ -468,17 +515,18 @@ process_molecule() {
 print_banner() {
     local disp
     disp=$(disp_line)
-    [[ -n $disp ]] && disp="D3_BJ" || disp="none"
+    [[ -n $disp ]] && disp=" D3BJ" || disp=""
     cat >&2 <<EOF
 =============================================================
  Stage 1: Gas-Phase Geometry Optimization
 -------------------------------------------------------------
  Mode        : ${exec_mode}
  Q-Chem      : ${qchem_setup:-"(qchem on PATH)"}
- Method      : ${method}
+ Method      : ${method}${disp}
  Basis       : ${basis}
- Dispersion  : ${disp}
- Grid        : ${grid}
+ Grid        : ${grid} (XC_GRID $(xc_grid_value))
+ SCF conv    : ${scf_conv}
+ Opt conv    : ${opt_conv}
  SCF MaxIter : ${max_iter}
  Cores       : ${cpus}
  Memory      : ${mem_mb} MB/core
