@@ -642,11 +642,18 @@ The `--basis` flag accepts any Q-Chem basis set keyword. By default Q-Chem evalu
 
 ### Solvents
 
-The `--solvent` flag accepts Q-Chem solvent keywords for the SMD implicit solvation model. Solvent parameters are passed via the `$smx` input block. Common options:
+The `--solvent` flag accepts Q-Chem solvent names. Q-Chem keeps **two** independent named-solvent databases that the workflow taps into per model:
 
-`water`, `methanol`, `ethanol`, `acetone`, `acetonitrile`, `dichloromethane`, `trichloromethane`, `benzene`, `toluene`, `hexane`, `cyclohexane`, `dimethylsulfoxide`, `dimethylformamide`, `tetrahydrofuran`, `pyridine`, `diethylether`
+- `--solvent-model smd` _(default)_ -> `$smx solvent <name>`, looked up in the **SMx solvent table** (manual Table 11.7, pp. 1233-1234). SMx names are lowercase with spaces and hyphens stripped (e.g. `aceticacid`, `1hexanol`, `propanoicacid`); uppercase `DMSO` is one exception.
+- `--solvent-model cpcm`/`iefpcm`/`cosmo` -> `$solvent SolventName <name>`, looked up in the **PCM SolventName database** (manual Table 11.4, p. 1209). PCM uses underscores for multi-word names (`acetic_acid`, `methylene_chloride`), retains hyphens (`1-1-dichloroethane`), and lists aliases (e.g. `DMSO` for `dimethylsulfoxide`, `THF` for `tetrahydrofuran`).
 
-**Note:** Q-Chem solvent keywords use full names with no spaces or hyphens (e.g., `1hexanol` not `1-hexanol`, `propanoicacid` not `propanoic acid`). See the SMx table in the Q-Chem manual for the complete list of 179 built-in solvents.
+Common SMx (default-model) options:
+
+`water`, `methanol`, `ethanol`, `1propanol`, `2propanol`, `1butanol`, `acetone`, `butanone`, `cyclohexanone`, `dichloromethane`, `chloroform`, `carbontetrachloride`, `1,2-dichloroethane`, `chlorobenzene`, `benzene`, `toluene`, `o-xylene`, `m-xylene`, `p-xylene`, `hexane`, `heptane`, `octane`, `cyclohexane`, `DMSO`, `dimethylformamide`, `dimethylacetamide`, `tetrahydrofuran`, `diethylether`, `14dioxane`, `ethylethanoate`, `acetonitrile`, `nitromethane`, `formamide`, `aceticacid`, `formicacid`, `pyridine`, `aniline`, `carbondisulfide`
+
+**Note on cross-model naming.** Because the SMx and PCM tables use different conventions, a single `--solvent` token may not serve both. Examples of divergence: SMx `DMSO` vs PCM `dimethylsulfoxide`; SMx `aceticacid` vs PCM `acetic_acid`; SMx `14dioxane` vs PCM `1-4-dioxane`; SMx `ethylethanoate` vs PCM `ethyl_acetate`. For those, use the spelling matching your chosen `--solvent-model`, or stick to a name that's identical in both. Common solvents that match across both tables -- safe for all four models -- include `water`, `methanol`, `ethanol`, `acetonitrile`, `dichloromethane`, `chloroform`, `benzene`, `toluene`, `hexane`, `cyclohexane`, `tetrahydrofuran`, `pyridine`, `formamide`.
+
+If your solvent isn't in either table, PCM accepts a numeric `Dielectric` value (entered manually in `$solvent`), and SMx accepts `solvent other` with user-supplied descriptors.
 
 The `--solvent-model` flag chooses the implicit model; the named `--solvent` maps to each:
 
