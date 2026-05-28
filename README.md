@@ -34,6 +34,9 @@ Stage 3                    Split conformers into individual XYZ files
 Stage 4                    Solvent-phase re-optimization (SMD)
   |                        4-qchem-solvent-opt.sh
   v
+Stage 4b                   Deduplicate redundant conformers (optional)
+  |                        4b-qchem-dedup.py
+  v
 Stage 5                    Boltzmann weighting & filtering
   |                        5-qchem-boltzmann-weight.sh
   |
@@ -147,6 +150,9 @@ Both `charge=0 mult=1` (key=value) and `0 1` (bare integers) are accepted. If ne
 # Stage 4: Re-optimize each conformer in solvent
 ./4-qchem-solvent-opt.sh --local --cpus 4 --solvent water pna
 
+# Stage 4b: Merge duplicate conformers so they are not double-counted (optional)
+python3 4b-qchem-dedup.py pna
+
 # Stage 5: Boltzmann filter
 ./5-qchem-boltzmann-weight.sh pna
 
@@ -206,6 +212,7 @@ aspirin/
 |-- 03_solvent_opt/            Stage 4 - solvent-phase re-optimization
 |   |-- aspirin_conf_list.txt  conformer working-dir list (SLURM array input)
 |   |-- aspirin_array.slurm    SLURM array job script (HPC mode)
+|   |-- aspirin_unique.dat     Stage 4b dedup keep-list (optional)
 |   |-- aspirin_001/
 |   |   |-- aspirin_001.inp
 |   |   `-- aspirin_001.out
@@ -370,7 +377,8 @@ Reads `crest_conformers.xyz` produced by Stage 2b and splits it into numbered pe
 | `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
 | `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `auto` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
-| `--solvent NAME` | | SMD solvent keyword | `water` |
+| `--solvent NAME` | | SMD solvent keyword (`none` = gas phase) | `water` |
+| `--solvent-model NAME` | | Implicit model: `smd`/`cpcm`/`iefpcm`/`cosmo` (see [Solvents](#solvents)) | `smd` |
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
@@ -389,6 +397,28 @@ Reads `crest_conformers.xyz` produced by Stage 2b and splits it into numbered pe
 **Output:** `<TAG>/03_solvent_opt/<CID>/<CID>.out` (Q-Chem output per conformer)
 
 On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.slurm`) throttled to `--max-running` concurrent tasks. Use `--max-running` to tune cluster load for large ensembles (e.g., CREST output). Set `CLUSTER_MAX_RUNNING` in `cluster.cfg` to apply a site-wide default.
+
+### 4b-qchem-dedup.py -- Conformer Deduplication (optional)
+
+```
+4b-qchem-dedup.py TAG [TAG ...]
+4b-qchem-dedup.py [OPTIONS] --list FILE
+```
+
+Multiple Confab seeds frequently relax to the *same* minimum during the Stage-4 optimization. Left in place, each redundant copy is counted again in the Stage-5 Boltzmann sum, distorting the populations (and the resulting spectra). This tool clusters the optimized conformers by heavy-atom RMSD (with an energy guard) and keeps the lowest-energy representative of each cluster. Stage 5 reads the keep-list automatically when it is present, so the recommended run order is Stage 4 -> 4b -> Stage 5.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--rmsd A` | Heavy-atom RMSD clustering threshold (Angstrom) | `0.10` |
+| `--ecut KCAL` | Energy guard for merging two conformers (kcal/mol) | `0.05` |
+| `--opt-dir D` | Stage-4 output subdirectory to scan | `03_solvent_opt` |
+| `--list FILE` | Text file of TAGs (one per line) | |
+| `--dry-run` | Print the clustering report without writing the keep-list | |
+
+**Input:** `<TAG>/03_solvent_opt/<CID>/<CID>.out` (Q-Chem outputs from Stage 4)
+**Output:** `<TAG>/03_solvent_opt/<TAG>_unique.dat` (lowest-energy conformer ID per cluster, one per line)
+
+Two conformers are merged only when both guards agree: heavy-atom RMSD below `--rmsd` *and* energy gap below `--ecut`. Run with `--dry-run` first to preview which conformers would be merged before writing the keep-list.
 
 ### 5-qchem-boltzmann-weight.sh -- Boltzmann Weighting & Filtering
 
@@ -420,7 +450,8 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 | `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--roots N` | | Number of excited states | `30` |
-| `--solvent NAME` | | SMD solvent keyword | `water` |
+| `--solvent NAME` | | SMD solvent keyword (`none` = gas phase) | `water` |
+| `--solvent-model NAME` | | Implicit model: `smd`/`cpcm`/`iefpcm`/`cosmo` (see [Solvents](#solvents)) | `smd` |
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
@@ -452,7 +483,8 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 | `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
 | `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `auto` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
-| `--solvent NAME` | | SMD solvent keyword | `water` |
+| `--solvent NAME` | | SMD solvent keyword (`none` = gas phase) | `water` |
+| `--solvent-model NAME` | | Implicit model: `smd`/`cpcm`/`iefpcm`/`cosmo` (see [Solvents](#solvents)) | `smd` |
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
 | `--mem-per-cpu MB` | | Memory per core (MB) | `2048` |
@@ -615,6 +647,19 @@ The `--solvent` flag accepts Q-Chem solvent keywords for the SMD implicit solvat
 `water`, `methanol`, `ethanol`, `acetone`, `acetonitrile`, `dichloromethane`, `trichloromethane`, `benzene`, `toluene`, `hexane`, `cyclohexane`, `dimethylsulfoxide`, `dimethylformamide`, `tetrahydrofuran`, `pyridine`, `diethylether`
 
 **Note:** Q-Chem solvent keywords use full names with no spaces or hyphens (e.g., `1hexanol` not `1-hexanol`, `propanoicacid` not `propanoic acid`). See the SMx table in the Q-Chem manual for the complete list of 179 built-in solvents.
+
+The `--solvent-model` flag chooses the implicit model; the named `--solvent` maps to each:
+
+| `--solvent-model` | Q-Chem setup | Notes |
+|-------------------|--------------|-------|
+| `smd` _(default)_ | `SOLVENT_METHOD SMD` + `$smx` | SMD named solvent (default). |
+| `cpcm` | `SOLVENT_METHOD PCM` + `$pcm Theory CPCM` | C-PCM; analytic Hessian (VCD-capable). |
+| `iefpcm` | `SOLVENT_METHOD PCM` + `$pcm Theory IEFPCM` | IEF-PCM; frequencies fall back to finite difference. |
+| `cosmo` | `SOLVENT_METHOD COSMO` + `$solvent` | COSMO dielectric model. |
+
+For `cpcm`/`iefpcm`/`cosmo` the named `--solvent` sets the dielectric via `$solvent SolventName`. `iefpcm` is Q-Chem-only (ORCA has no distinct IEF-PCM form).
+
+Pass `--solvent none` to skip implicit solvation and run in the gas phase -- no `SOLVENT_METHOD` keyword or `$smx` block is written.
 
 ### Dispersion Corrections
 

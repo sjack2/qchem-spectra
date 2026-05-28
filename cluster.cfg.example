@@ -1,5 +1,5 @@
 # =============================================================================
-# cluster.cfg.example — site-specific configuration for qchem-spectra
+# cluster.cfg.example -- site-specific configuration for qchem-spectra
 # =============================================================================
 #
 # Copy this file to cluster.cfg and fill in the values for your cluster.

@@ -28,7 +28,8 @@
 #                              (also SG1/SG2/SG3 or a 12-digit XC_GRID code)
 #        --scf-conv LEVEL      SCF convergence: default|verytight|extreme [default]
 #        --opt-conv LEVEL      Geometry convergence: default|tight|verytight [default]
-#        --solvent NAME        SMD solvent keyword              [water]
+#        --solvent NAME        SMD solvent keyword; 'none' = gas phase              [water]
+#        --solvent-model NAME  Implicit model: smd|cpcm|iefpcm|cosmo  [smd]
 #        --max-scf N           Max SCF cycles                  [150]
 #   -c | --cpus N              CPU cores                       [12]
 #        --mem-per-cpu MB      Memory per core in MB            [2048]
@@ -96,6 +97,7 @@ DEFAULT_GRID="default"
 DEFAULT_SCF_CONV="default"
 DEFAULT_OPT_CONV="default"
 DEFAULT_SOLVENT="water"
+DEFAULT_SOLVENT_MODEL="smd"
 DEFAULT_MAX_SCF=150
 DEFAULT_CPUS=4
 DEFAULT_MEM_PER_CPU=2048
@@ -276,6 +278,7 @@ parse_cli() {
     scf_conv=$DEFAULT_SCF_CONV
     opt_conv=$DEFAULT_OPT_CONV
     solvent=$DEFAULT_SOLVENT
+    solvent_model=$DEFAULT_SOLVENT_MODEL
     max_scf=$DEFAULT_MAX_SCF
     cpus=$DEFAULT_CPUS
     mem_mb=$DEFAULT_MEM_PER_CPU
@@ -290,7 +293,7 @@ parse_cli() {
 
     local opts
     opts=$(getopt -o hb:m:c:g: \
-        --long help,basis:,method:,disp:,ri:,grid:,scf-conv:,opt-conv:,solvent:,max-scf:,cpus:,\
+        --long help,basis:,method:,disp:,ri:,grid:,scf-conv:,opt-conv:,solvent:,solvent-model:,max-scf:,cpus:,\
 mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
@@ -305,6 +308,7 @@ mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "
             --scf-conv)       scf_conv=$2;          shift 2 ;;
             --opt-conv)       opt_conv=$2;          shift 2 ;;
             --solvent)        solvent=$2;            shift 2 ;;
+            --solvent-model)  solvent_model=$2;     shift 2 ;;
             --max-scf)        max_scf=$2;           shift 2 ;;
             -c|--cpus)        cpus=$2;              shift 2 ;;
             --mem-per-cpu)    mem_mb=$2;            shift 2 ;;
@@ -341,6 +345,10 @@ mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "
         default|tight|verytight) ;;
         *) die "--opt-conv must be default, tight, or verytight (got '${opt_conv}')" ;;
     esac
+    case $solvent_model in
+        smd|cpcm|iefpcm|cosmo) ;;
+        *) die "--solvent-model must be smd, cpcm, iefpcm, or cosmo (got '${solvent_model}')" ;;
+    esac
 }
 
 # ============================================================================
@@ -356,9 +364,27 @@ write_qchem_input() {
     thresh_val=$(scf_thresh_value)
     opt_lines=$(opt_conv_lines)
 
+    local solvent_rem solvent_blocks solvent_desc pcm_theory
+    if [[ ${solvent,,} == none ]]; then
+        solvent_rem=""; solvent_blocks=""; solvent_desc="gas phase"
+    elif [[ $solvent_model == smd ]]; then
+        solvent_rem=$'\n  SOLVENT_METHOD      SMD'
+        printf -v solvent_blocks '\n\n$smx\n  solvent %s\n$end' "$solvent"
+        solvent_desc="SMD ${solvent}"
+    elif [[ $solvent_model == cosmo ]]; then
+        solvent_rem=$'\n  SOLVENT_METHOD      COSMO'
+        printf -v solvent_blocks '\n\n$solvent\n  SolventName %s\n$end' "$solvent"
+        solvent_desc="COSMO ${solvent}"
+    else
+        [[ $solvent_model == iefpcm ]] && pcm_theory=IEFPCM || pcm_theory=CPCM
+        solvent_rem=$'\n  SOLVENT_METHOD      PCM'
+        printf -v solvent_blocks '\n\n$pcm\n  Theory %s\n$end\n\n$solvent\n  SolventName %s\n$end' "$pcm_theory" "$solvent"
+        solvent_desc="${pcm_theory} ${solvent}"
+    fi
+
     cat >"$inp_file" <<EOF
 \$comment
-Implicit-solvent optimization of ${cid} (SMD ${solvent})
+Optimization of ${cid} (${solvent_desc})
 \$end
 
 \$molecule
@@ -369,18 +395,13 @@ $(tail -n +3 "$xyz_file")
 \$rem
   JOB_TYPE            OPT
   METHOD              ${method}
-  BASIS               ${basis}
-  SOLVENT_METHOD      SMD
+  BASIS               ${basis}${solvent_rem}
   MAX_SCF_CYCLES      ${max_scf}
   SCF_CONVERGENCE     ${scf_val}
   SYM_IGNORE          TRUE
   THRESH              ${thresh_val}
   XC_GRID             ${grid_val}${disp}${ri}${opt_lines}
-\$end
-
-\$smx
-  solvent             ${solvent}
-\$end
+\$end${solvent_blocks}
 EOF
 }
 
@@ -540,7 +561,7 @@ print_banner() {
  Grid        : ${grid} (XC_GRID $(xc_grid_value))
  SCF conv    : ${scf_conv} (SCF_CONVERGENCE $(scf_conv_value))
  Opt conv    : ${opt_conv}
- Solvent     : ${solvent} (SMD)
+ Solvent     : ${solvent}$([[ ${solvent,,} == none ]] && printf ' (gas phase)' || printf ' (%s)' "$solvent_model")
  SCF MaxIter : ${max_scf}
  Cores       : ${cpus}
  Mem/core    : ${mem_mb} MB
