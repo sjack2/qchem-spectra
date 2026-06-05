@@ -1,6 +1,6 @@
 # Q-Chem Computational Spectra Workflow
 
-A modular Bash/Python workflow for computing UV-Vis absorption, electronic circular dichroism (ECD), infrared (IR), vibrational circular dichroism (VCD), and Raman spectra using Q-Chem density functional theory. Designed for research use, and runs identically on a local workstation or a SLURM-managed HPC cluster.
+A modular Bash/Python workflow for computing UV-Vis absorption, electronic circular dichroism (ECD), infrared (IR), vibrational circular dichroism (VCD), and Raman spectra using Q-Chem density functional theory. Designed for research use, the same scripts run on a local workstation or a SLURM-managed HPC cluster: pass `--local` to run directly, or omit it to auto-submit via `sbatch`.
 
 > **License requirement:** Q-Chem is commercial software. You must hold a valid Q-Chem license before using this workflow. Academic site licenses are available from [Q-Chem, Inc.](https://www.q-chem.com/)
 
@@ -13,7 +13,7 @@ A modular Bash/Python workflow for computing UV-Vis absorption, electronic circu
 - **Two conformer search paths:** Open Babel Confab (fast, force-field-based) or CREST (GFN2-xTB metadynamics, more thorough). Both branches produce the same per-conformer XYZ files consumed by Stage 4.
 - **Boltzmann-weighted spectral averaging** with configurable temperature and population threshold.
 - **Physically correct broadening:** Gaussian convolution in energy space (eV) for electronic spectra and in wavenumber space (cm-1) for vibrational spectra, with Jacobian correction for ECD. Produces both PNG/PDF plots and CSV data tables.
-- **`--dry-run` on every script** to inspect generated Q-Chem inputs without running any calculations.
+- **`--dry-run` on every stage script** to inspect generated Q-Chem inputs without running any calculations.
 
 ---
 
@@ -31,7 +31,7 @@ Stage 3                    Split conformers into individual XYZ files
   |                        3-qchem-conf-split.sh   (Confab output)
   |                   or   3b-qchem-crest-conf-split.sh  (CREST output)
   v
-Stage 4                    Solvent-phase re-optimization (SMD)
+Stage 4                    Solvent-phase re-optimization (implicit solvent)
   |                        4-qchem-solvent-opt.sh
   v
 Stage 4b                   Deduplicate redundant conformers (optional)
@@ -62,12 +62,14 @@ Stages 1, 4, and 5 are shared. Stages 2/2b and 3/3b are interchangeable: both pr
 
 | Software | Version | Purpose |
 |----------|---------|---------|
-| Q-Chem | 6.0+ | Quantum chemistry engine (commercial license required) |
+| Q-Chem | 6.4.0 (tested) | Quantum chemistry engine (commercial license required) |
 | Open Babel | >= 3.0 | File conversion & Confab conformer search |
 | Python 3 | >= 3.8 | Plotting tools |
 | CREST | >= 2.12 | _(optional)_ GFN2-xTB conformer search |
 
 Q-Chem uses shared-memory parallelism (OpenMP threads), so no external MPI installation is required.
+
+> **Version note:** Developed and tested with **Q-Chem 6.4.0**. The scripts use only long-standing input syntax (SMD / PCM / COSMO solvation, RI-J density fitting, analytic-Hessian VCD), so it likely runs on other 6.x releases, but the current feature set has **not** been verified on earlier versions (e.g. 6.0). On a different Q-Chem version, confirm the `$smx` / `$pcm` / `$solvent` and `AUX_BASIS` blocks against that version's manual.
 
 ### 2. Clone the repository
 
@@ -121,7 +123,7 @@ CLUSTER_PARTITION=general
 # CLUSTER_WALL=04:00:00
 ```
 
-`cluster.cfg` is gitignored, so site-specific paths are never committed to the repository. The template `cluster.cfg.example` documents all supported variables, including `CLUSTER_LD_LIBRARY_PATH` for sites where Q-Chem depends on Intel or GCC libraries not present on compute nodes by default.
+The template `cluster.cfg.example` documents all supported variables, including `CLUSTER_LD_LIBRARY_PATH` for sites where Q-Chem depends on Intel or GCC libraries not present on compute nodes by default.
 
 ### 6. Set up your molecule
 
@@ -377,7 +379,7 @@ Reads `crest_conformers.xyz` produced by Stage 2b and splits it into numbered pe
 | `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
 | `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `auto` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
-| `--solvent NAME` | | SMD solvent keyword (`none` = gas phase) | `water` |
+| `--solvent NAME` | | Solvent name (`none` = gas phase) | `water` |
 | `--solvent-model NAME` | | Implicit model: `smd`/`cpcm`/`iefpcm`/`cosmo` (see [Solvents](#solvents)) | `smd` |
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
@@ -450,7 +452,7 @@ Two conformers are merged only when both guards agree: heavy-atom RMSD below `--
 | `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
 | `--roots N` | | Number of excited states | `30` |
-| `--solvent NAME` | | SMD solvent keyword (`none` = gas phase) | `water` |
+| `--solvent NAME` | | Solvent name (`none` = gas phase) | `water` |
 | `--solvent-model NAME` | | Implicit model: `smd`/`cpcm`/`iefpcm`/`cosmo` (see [Solvents](#solvents)) | `smd` |
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
@@ -483,7 +485,7 @@ On HPC, all conformers are submitted as a single SLURM job array (`<TAG>_array.s
 | `--basis NAME` | `-b` | Basis set | `def2-TZVP` |
 | `--disp KW` | | Dispersion: `auto`, `none`, `D3BJ` | `auto` |
 | `--ri KW` | | Density fitting: `none`, `j`, `jk` (def2 basis only) | `none` |
-| `--solvent NAME` | | SMD solvent keyword (`none` = gas phase) | `water` |
+| `--solvent NAME` | | Solvent name (`none` = gas phase) | `water` |
 | `--solvent-model NAME` | | Implicit model: `smd`/`cpcm`/`iefpcm`/`cosmo` (see [Solvents](#solvents)) | `smd` |
 | `--max-scf N` | | Max SCF cycles | `150` |
 | `--cpus N` | `-c` | CPU cores (OpenMP threads) | `4` |
@@ -644,14 +646,14 @@ The `--basis` flag accepts any Q-Chem basis set keyword. By default Q-Chem evalu
 
 The `--solvent` flag accepts Q-Chem solvent names. Q-Chem keeps **two** independent named-solvent databases that the workflow taps into per model:
 
-- `--solvent-model smd` _(default)_ -> `$smx solvent <name>`, looked up in the **SMx solvent table** (manual Table 11.7, pp. 1233-1234). SMx names are lowercase with spaces and hyphens stripped (e.g. `aceticacid`, `1hexanol`, `propanoicacid`); uppercase `DMSO` is one exception.
+- `--solvent-model smd` _(default)_ -> `$smx solvent <name>`, looked up in the **SMx solvent table** (manual Table 11.7, pp. 1233-1234). Per that table's footnote, SMx names have spaces and hyphens removed (e.g. `acetic acid` -> `aceticacid`, `1-hexanol` -> `1hexanol`); the acronym `DMSO` is listed as-is.
 - `--solvent-model cpcm`/`iefpcm`/`cosmo` -> `$solvent SolventName <name>`, looked up in the **PCM SolventName database** (manual Table 11.4, p. 1209). PCM uses underscores for multi-word names (`acetic_acid`, `methylene_chloride`), retains hyphens (`1-1-dichloroethane`), and lists aliases (e.g. `DMSO` for `dimethylsulfoxide`, `THF` for `tetrahydrofuran`).
 
 Common SMx (default-model) options:
 
-`water`, `methanol`, `ethanol`, `1propanol`, `2propanol`, `1butanol`, `acetone`, `butanone`, `cyclohexanone`, `dichloromethane`, `chloroform`, `carbontetrachloride`, `1,2-dichloroethane`, `chlorobenzene`, `benzene`, `toluene`, `o-xylene`, `m-xylene`, `p-xylene`, `hexane`, `heptane`, `octane`, `cyclohexane`, `DMSO`, `dimethylformamide`, `dimethylacetamide`, `tetrahydrofuran`, `diethylether`, `14dioxane`, `ethylethanoate`, `acetonitrile`, `nitromethane`, `formamide`, `aceticacid`, `formicacid`, `pyridine`, `aniline`, `carbondisulfide`
+`water`, `methanol`, `ethanol`, `1propanol`, `2propanol`, `1butanol`, `acetone`, `butanone`, `cyclohexanone`, `dichloromethane`, `trichloromethane`, `carbontetrachloride`, `chlorobenzene`, `benzene`, `toluene`, `oxylene`, `mxylene`, `pxylene`, `hexane`, `heptane`, `octane`, `cyclohexane`, `DMSO`, `dimethylformamide`, `dimethylacetamide`, `tetrahydrofuran`, `diethylether`, `ethylethanoate`, `acetonitrile`, `nitromethane`, `formamide`, `aceticacid`, `formicacid`, `pyridine`, `aniline`, `carbondisulfide`
 
-**Note on cross-model naming.** Because the SMx and PCM tables use different conventions, a single `--solvent` token may not serve both. Examples of divergence: SMx `DMSO` vs PCM `dimethylsulfoxide`; SMx `aceticacid` vs PCM `acetic_acid`; SMx `14dioxane` vs PCM `1-4-dioxane`; SMx `ethylethanoate` vs PCM `ethyl_acetate`. For those, use the spelling matching your chosen `--solvent-model`, or stick to a name that's identical in both. Common solvents that match across both tables -- safe for all four models -- include `water`, `methanol`, `ethanol`, `acetonitrile`, `dichloromethane`, `chloroform`, `benzene`, `toluene`, `hexane`, `cyclohexane`, `tetrahydrofuran`, `pyridine`, `formamide`.
+**Note on cross-model naming.** Because the SMx and PCM tables use different conventions, a single `--solvent` token may not serve both. Examples of divergence: SMx `aceticacid` vs PCM `acetic_acid`; SMx `formicacid` vs PCM `formic_acid`; SMx `carbontetrachloride` vs PCM `carbon_tetrachloride`; SMx `ethylethanoate` vs PCM `ethyl_acetate`. For those, use the spelling matching your chosen `--solvent-model`, or stick to a name that's identical in both. Common solvents that match across both tables -- safe for all four models -- include `water`, `methanol`, `ethanol`, `acetonitrile`, `dichloromethane`, `trichloromethane`, `benzene`, `toluene`, `hexane`, `cyclohexane`, `tetrahydrofuran`, `pyridine`, `formamide`, `DMSO`.
 
 If your solvent isn't in either table, PCM accepts a numeric `Dielectric` value (entered manually in `$solvent`), and SMx accepts `solvent other` with user-supplied descriptors.
 
@@ -688,7 +690,7 @@ The `--ri` flag enables the resolution-of-identity (RI, a.k.a. density fitting) 
 | `j` | RI-J on the Coulomb term: `AUX_BASIS_J RIJ-<basis>`. Equivalent to ORCA's `def2/J`. |
 | `jk` | RI-J and RI-K: `AUX_BASIS_J` and `AUX_BASIS_K` set to `RIJK-<basis>`. |
 
-The auxiliary basis name is auto-derived from the orbital basis (e.g. `def2-TZVP` -> `RIJ-def2-TZVP`), so **`--ri` requires a `def2-*` orbital basis**. Pass `-b def2-TZVP` (or similar) when combining `--ri` with a non-def2 orbital basis (e.g. a Pople set like `6-31+G(d)`); otherwise the script exits with a descriptive error.
+The workflow builds the auxiliary basis name by prefixing the orbital basis (`def2-TZVP` -> `RIJ-def2-TZVP`, or `RIJK-def2-TZVP` for `jk`). These `RIJ-`/`RIJK-` auxiliary sets exist only for the def2 family, so **`--ri` here requires a `def2-*` orbital basis** -- a limitation of the auto-naming, not of the RI approximation itself. The default `def2-TZVP` already satisfies this, so `--ri` works out of the box. Requesting `--ri` with a non-def2 basis (e.g. a Pople set like `6-31+G(d)`) stops the script with an error directing you to a `def2-*` basis.
 
 **Note on frequencies / VCD:** RI-J is well established for SCF energies and gradients, but its interaction with the analytic Hessian and atomic axial tensors (VCD) is less universally validated. Test `--ri j` on a small molecule (e.g. methyloxirane) and confirm the frequencies and rotatory strengths look sane before relying on it for a production VCD set.
 
@@ -853,6 +855,29 @@ The SLURM job inherits the activated environment's `LD_LIBRARY_PATH`, so no chan
 **VCD frequency job runs slowly:** Analytic Hessian calculations scale more steeply than single-point energies. Use `--dry-run` first to check conformer count. B3LYP is recommended over range-separated hybrids for frequency calculations.
 
 **Q-Chem output files:** Q-Chem writes `.out` files (not `.log`). The scripts and Python tools expect this extension. If you have outputs with a different extension, rename them or create symlinks.
+
+---
+
+## Teaching Module
+
+Beyond research use, the workflow doubles as a teaching resource. The
+[`teaching/`](teaching/) folder provides a set of guided laboratory modules,
+Word documents (`.docx`) that instructors can download and edit, adapted from a
+tested sequence of graduate computational-spectroscopy labs. Each session is
+self-contained (about 3 hours) and takes a student from a single structure to a
+broadened, conformationally averaged spectrum while building intuition for each
+stage of the pipeline:
+
+- **Session 1 -- UV-Vis benchmarking** (para-nitroaniline): how the functional,
+  basis set, and solvent model affect a rigid charge-transfer chromophore.
+- **Session 2 -- ECD with conformational averaging** (ephedrine): conformer
+  search, Boltzmann weighting, and how the ensemble shapes the spectrum.
+- **Session 3 -- IR / VCD** ((S)-methyloxirane): vibrational and chiroptical
+  spectra from analytic frequencies.
+
+Each session ships a student handout and a report template; an instructor lesson
+plan and pre/post surveys are also provided. All materials are open (MIT) and
+freely modifiable.
 
 ---
 

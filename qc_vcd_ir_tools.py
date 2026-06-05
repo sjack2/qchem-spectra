@@ -398,6 +398,9 @@ def _cli() -> None:
     parser.add_argument("--invert_ir", action="store_true", help="Plot IR peaks downward")
     parser.add_argument("--ir_fwhm", type=float, default=10.0, help="IR FWHM / cm-1")
     parser.add_argument("--vcd_fwhm", type=float, default=6.0, help="VCD FWHM / cm-1")
+    parser.add_argument("--shift", type=float, default=0.0,
+                        help="Rigid shift (cm-1) added to all frequencies before "
+                             "broadening/plotting (e.g. the value from qc_fit_fwhm.py)")
     parser.add_argument(
         "--xlim",
         nargs=2,
@@ -472,6 +475,15 @@ def _cli() -> None:
 
     ir_df = pd.concat(ir_all, ignore_index=True)
     vcd_df = pd.concat(vcd_all, ignore_index=True)
+
+    # Optional rigid frequency shift (e.g. from qc_fit_fwhm.py): align the
+    # spectrum before it is written and plotted. Default 0.0 changes nothing.
+    if args.shift:
+        if not ir_df.empty:
+            ir_df["nu_cm"] += args.shift
+        if not vcd_df.empty:
+            vcd_df["nu_cm"] += args.shift
+        print(f"Applied rigid shift: {args.shift:+g} cm-1")
 
     ir_df.to_csv(f"{prefix}_ir.csv", index=False)
     vcd_df.to_csv(f"{prefix}_vcd.csv", index=False)
