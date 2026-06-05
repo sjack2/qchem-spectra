@@ -386,13 +386,16 @@ CREST is often available as a module:
 module load apps/crest/3.0
 ```
 
-If not, download the static binary and place it in your `$HOME/bin`:
+If not, download the static binary and place it on your PATH (e.g.,
+`$HOME/opt/bin/`):
 
 ```bash
-mkdir -p $HOME/bin
-wget -O $HOME/bin/crest https://github.com/crest-lab/crest/releases/download/v3.0.2/crest
-chmod +x $HOME/bin/crest
-export PATH=$HOME/bin:$PATH
+mkdir -p $HOME/opt/bin
+wget https://github.com/crest-lab/crest/releases/download/v3.0.2/crest-gnu-12-ubuntu-latest.tar.xz
+tar -xf crest-gnu-12-ubuntu-latest.tar.xz
+mv crest $HOME/opt/bin/crest
+chmod +x $HOME/opt/bin/crest
+export PATH=$HOME/opt/bin:$PATH
 ```
 
 ---
