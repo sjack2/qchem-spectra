@@ -860,24 +860,13 @@ The SLURM job inherits the activated environment's `LD_LIBRARY_PATH`, so no chan
 
 ## Teaching Module
 
-Beyond research use, the workflow doubles as a teaching resource. The
-[`teaching/`](teaching/) folder provides a set of guided laboratory modules,
-Word documents (`.docx`) that instructors can download and edit, adapted from a
-tested sequence of graduate computational-spectroscopy labs. Each session is
-self-contained (about 3 hours) and takes a student from a single structure to a
-broadened, conformationally averaged spectrum while building intuition for each
-stage of the pipeline:
-
-- **Session 1 -- UV-Vis benchmarking** (para-nitroaniline): how the functional,
-  basis set, and solvent model affect a rigid charge-transfer chromophore.
-- **Session 2 -- ECD with conformational averaging** (ephedrine): conformer
-  search, Boltzmann weighting, and how the ensemble shapes the spectrum.
-- **Session 3 -- IR / VCD** ((S)-methyloxirane): vibrational and chiroptical
-  spectra from analytic frequencies.
-
-Each session ships a student handout and a report template; an instructor lesson
-plan and pre/post surveys are also provided. All materials are open (MIT) and
-freely modifiable.
+The [`teaching/`](teaching/) folder ships a set of guided graduate-level
+laboratory modules adapted from a tested sequence of computational
+spectroscopy labs. Each session is a self-contained roughly 3-hour exercise on
+a different spectroscopy technique (UV-Vis, ECD, or IR / VCD), built on the
+same Q-Chem pipeline scripts as the rest of the repository. Student handouts,
+report templates, and an instructor lesson plan are provided as editable Word
+documents. See the [teaching folder README](teaching/README.md) for details.
 
 ---
 
