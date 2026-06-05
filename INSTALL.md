@@ -12,13 +12,13 @@ This guide covers installing all software required to run the Q-Chem Electronic 
 
 | Software | Version | Required? | Purpose |
 |----------|---------|-----------|---------|
-| Q-Chem | >= 5.4 | Yes | Quantum chemistry calculations |
+| Q-Chem | 6.4.0 (tested) | Yes | Quantum chemistry calculations |
 | Open Babel | >= 3.0 | Yes | XYZ/SDF conversion, Confab conformer search |
 | Python 3 | >= 3.8 | Yes | Spectral plotting tools |
 | NumPy | >= 1.20 | Yes | Numerical operations |
 | Matplotlib | >= 3.4 | Yes | Plot generation |
 | Pandas | >= 1.3 | Yes | Data handling |
-| CREST | >= 2.12 | Optional | GFN2-xTB conformer search (Stage 2b) |
+| CREST | >= 3.0 | Optional | GFN2-xTB conformer search (Stage 2b) |
 | Bash | >= 4.0 | Yes | Workflow scripts (ships with all Linux distributions) |
 | getopt (GNU) | -- | Yes | CLI flag parsing (ships with `util-linux`) |
 
@@ -32,7 +32,6 @@ Before installing anything, check what you already have:
 
 ```bash
 which qchem        # Q-Chem
-qchem -h 2>&1 | head -3   # Q-Chem help / version info
 which obabel       # Open Babel
 obabel -V          # Open Babel version
 python3 --version  # Python 3
@@ -222,7 +221,49 @@ crest --version
 
 ---
 
-## 6. Windows Users: Installing WSL
+## 6. macOS Notes
+
+The workflow runs on macOS, but two things differ from a Linux install.
+
+### a) Bash
+
+The system Bash on macOS is version 3.2, which is too old for the workflow scripts (they rely on associative arrays and other Bash 4 features). Install a modern Bash with [Homebrew](https://brew.sh/):
+
+```bash
+brew install bash
+```
+
+Homebrew installs the new shell at `/opt/homebrew/bin/bash` (Apple Silicon) or `/usr/local/bin/bash` (Intel). Put the Homebrew bin directory ahead of `/bin` on your `PATH` so the workflow scripts run under the new interpreter, or invoke them explicitly:
+
+```bash
+/opt/homebrew/bin/bash 1-qchem-init-opt.sh --local --cpus 4 aspirin
+```
+
+### b) Other dependencies via Homebrew
+
+The remaining tools install cleanly through Homebrew:
+
+```bash
+brew install python@3.11
+brew install open-babel
+brew install crest        # optional
+pip3 install numpy matplotlib pandas
+```
+
+Q-Chem is installed the same way as on Linux (Section 4): obtain a commercial license, run the macOS installer, and source `setqc` in your shell.
+
+### c) Verify
+
+```bash
+bash --version    # should report 4.x or 5.x, not 3.2
+python3 --version
+obabel -V
+which qchem
+```
+
+---
+
+## 7. Windows Users: Installing WSL
 
 If you are on Windows 10 (version 2004+) or Windows 11, you can run the entire workflow inside the Windows Subsystem for Linux.
 
@@ -265,20 +306,20 @@ This should show your Ubuntu installation with State = Running.
 
 ### e) Install Software Inside WSL
 
-Once inside the WSL terminal, follow Sections 2--5 above as if you were on a native Linux machine. All `apt` and `pip` commands work identically.
+Once inside the WSL terminal, follow Sections 2-5 above as if you were on a native Linux machine. All `apt` and `pip` commands work identically.
 
 > **Performance note:** WSL2 provides near-native performance for CPU-bound tasks like Q-Chem. Store your working files inside the Linux filesystem (`/home/username/`) rather than on the Windows drive (`/mnt/c/`) for best I/O performance.
 
 ---
 
-## 7. HPC Cluster Setup
+## 8. HPC Cluster Setup
 
 On a SLURM-managed cluster, software is typically loaded via the `module` system rather than installed locally.
 
 ### Typical Module Setup
 
 ```bash
-module load apps/qchem/6.1
+module load apps/qchem/6.4
 module load apps/python/3.11
 ```
 
@@ -310,12 +351,13 @@ The workflow reads site-specific paths from `cluster.cfg`. Copy the example and 
 cp cluster.cfg.example cluster.cfg
 ```
 
-The key variable is `QCHEM_SETUP` -- the full path to your Q-Chem `setqc` script:
+The key variable is `QCHEM_SETUP`, the full path to your Q-Chem `setqc` script. `CLUSTER_PARTITION` and `CLUSTER_WALL` set the default SLURM partition and wall-clock limit; both can be overridden per-call with `--partition` and `--time`:
 
 ```bash
 # cluster.cfg
 QCHEM_SETUP=/path/to/qchem/setqc
 CLUSTER_PARTITION=general
+CLUSTER_WALL=06:00:00
 ```
 
 If Q-Chem was compiled with Intel compilers, you may also need `CLUSTER_LD_LIBRARY_PATH` to provide the Intel OpenMP runtime (`libiomp5.so`) and a compatible `libstdc++.so.6`:
@@ -355,7 +397,7 @@ export PATH=$HOME/bin:$PATH
 
 ---
 
-## 8. Final Verification
+## 9. Final Verification
 
 Run these commands to confirm everything is ready:
 
@@ -369,7 +411,7 @@ obabel -V
 
 echo "=== Q-Chem ==="
 which qchem
-echo "(run a test job to confirm -- see Section 4d)"
+echo "(run a test job to confirm; see Section 4d)"
 
 echo "=== CREST (optional) ==="
 which crest 2>/dev/null && crest --version || echo "CREST not installed (optional)"
