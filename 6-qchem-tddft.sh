@@ -29,7 +29,7 @@
 #        --solvent NAME        SMD solvent keyword; 'none' = gas phase               [water]
 #        --solvent-model NAME  Implicit model: smd|cpcm|iefpcm|cosmo  [smd]
 #        --max-scf N           Max SCF cycles                    [150]
-#   -c | --cpus N              CPU cores                         [12]
+#   -c | --cpus N              CPU cores                         [4]
 #        --mem-per-cpu MB      Memory per core in MB             [2048]
 #        --max-running N       Max simultaneous SLURM array tasks [10]
 #        --qchem-setup PATH    Path to Q-Chem setup script       [auto]
@@ -340,6 +340,7 @@ mem-per-cpu:,max-running:,partition:,time:,list:,qchem-setup:,local,dry-run -- "
 # ============================================================================
 write_qchem_input() {
     local cid=$1 xyz_file=$2 inp_file=$3
+    local mem_total=$(( cpus * mem_mb ))
     local ri grid_val scf_val thresh_line
     ri=$(ri_lines)
     grid_val=$(xc_grid_value)
@@ -386,6 +387,8 @@ $(tail -n +3 "$xyz_file")
   MAX_SCF_CYCLES      ${max_scf}
   SYM_IGNORE          TRUE
   XC_GRID             ${grid_val}${ri}
+  MEM_TOTAL           ${mem_total}
+  MEM_STATIC          500
 \$end${solvent_blocks}
 EOF
 }

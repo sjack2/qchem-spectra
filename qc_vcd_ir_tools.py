@@ -488,7 +488,7 @@ def _cli() -> None:
     ir_df.to_csv(f"{prefix}_ir.csv", index=False)
     vcd_df.to_csv(f"{prefix}_vcd.csv", index=False)
 
-    nu_min, nu_max = (0.0, 4000.0) if not args.xlim else tuple(map(float, args.xlim))
+    nu_min, nu_max = (0.0, 4000.0) if not args.xlim else sorted(map(float, args.xlim))
     sigma_ir = _sigma_from_fwhm(args.ir_fwhm)
     sigma_vcd = _sigma_from_fwhm(args.vcd_fwhm)
 

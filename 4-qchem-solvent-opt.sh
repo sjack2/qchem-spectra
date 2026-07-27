@@ -31,7 +31,7 @@
 #        --solvent NAME        SMD solvent keyword; 'none' = gas phase              [water]
 #        --solvent-model NAME  Implicit model: smd|cpcm|iefpcm|cosmo  [smd]
 #        --max-scf N           Max SCF cycles                  [150]
-#   -c | --cpus N              CPU cores                       [12]
+#   -c | --cpus N              CPU cores                       [4]
 #        --mem-per-cpu MB      Memory per core in MB            [2048]
 #        --qchem-setup PATH    Path to Q-Chem setup script      [auto]
 #        --list FILE           File of molecule TAGs
@@ -185,14 +185,14 @@ disp_line() {
     local method_upper=${method^^}
     case $disp_mode in
         none|NONE) printf '' ;;
-        D3BJ|d3bj) printf '\n  DFT_D              D3_BJ' ;;
+        D3BJ|d3bj) printf '\n  DFT_D               D3_BJ' ;;
         auto|AUTO)
             if [[ $method =~ (-D[0-9]?|-D3BJ|-D3ZERO|-D4)($|[[:space:]]) ]]; then
                 printf ''; return; fi
             case $method_upper in
                 WB97X-D|WB97X-D3|WB97X-D4|WB97X-V|WB97XD|WB97M-V|B97-D|B97-D3)
                     printf ''; return ;; esac
-            printf '\n  DFT_D              D3_BJ' ;;
+            printf '\n  DFT_D               D3_BJ' ;;
         *) die "--disp must be auto, none, or D3BJ" ;;
     esac
 }
@@ -356,6 +356,7 @@ mem-per-cpu:,partition:,time:,max-running:,list:,qchem-setup:,local,dry-run -- "
 # ============================================================================
 write_qchem_input() {
     local cid=$1 xyz_file=$2 inp_file=$3
+    local mem_total=$(( cpus * mem_mb ))
     local disp ri grid_val scf_val thresh_val opt_lines
     disp=$(disp_line)
     ri=$(ri_lines)
@@ -401,6 +402,8 @@ $(tail -n +3 "$xyz_file")
   SYM_IGNORE          TRUE
   THRESH              ${thresh_val}
   XC_GRID             ${grid_val}${disp}${ri}${opt_lines}
+  MEM_TOTAL           ${mem_total}
+  MEM_STATIC          500
 \$end${solvent_blocks}
 EOF
 }
@@ -427,7 +430,7 @@ write_array_slurm() {
 #SBATCH --error=${out_dir}/slurm-%A_%a.err
 
 # ---- Q-Chem environment ----
-source ${qchem_setup}
+${qchem_setup:+source ${qchem_setup}}
 ${CLUSTER_LD_LIBRARY_PATH:+export LD_LIBRARY_PATH=${CLUSTER_LD_LIBRARY_PATH}:\$LD_LIBRARY_PATH}
 export QCSCRATCH=/tmp/\$SLURM_JOB_ID
 

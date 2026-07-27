@@ -180,6 +180,9 @@ def _cli() -> None:
     parser.add_argument("--prefix", default=None, help="Explicit output prefix [vib]")
     parser.add_argument("--stick", action="store_true", help="Overlay stick spectrum")
     parser.add_argument("--raman_fwhm", type=float, default=10.0, help="Raman FWHM / cm-1")
+    parser.add_argument("--shift", type=float, default=0.0,
+                        help="Rigid shift (cm-1) added to all frequencies before "
+                             "broadening/plotting (e.g. the value from qc_fit_fwhm.py)")
     parser.add_argument("--xlim", nargs=2, metavar=("MIN", "MAX"), type=float, help="nu range / cm-1")
     parser.add_argument("--ylim", nargs=2, type=float, metavar=("YMIN", "YMAX"))
     parser.add_argument("--no_title", action="store_true")
@@ -229,9 +232,16 @@ def _cli() -> None:
             df["intensity"] *= w
         raman_all.append(df)
     raman_df = pd.concat(raman_all, ignore_index=True)
+
+    # Optional rigid frequency shift (e.g. from qc_fit_fwhm.py): align the
+    # spectrum before it is written and plotted. Default 0.0 changes nothing.
+    if args.shift:
+        raman_df["nu_cm"] += args.shift
+        print(f"Applied rigid shift: {args.shift:+g} cm-1")
+
     raman_df.to_csv(f"{prefix}_raman.csv", index=False)
 
-    nu_min, nu_max = (0.0, 4000.0) if not args.xlim else tuple(map(float, args.xlim))
+    nu_min, nu_max = (0.0, 4000.0) if not args.xlim else sorted(map(float, args.xlim))
     base = args.title if args.title else Path(prefix).name.replace("_", " ")
     title = None if args.no_title else f"{base} Raman Spectrum"
 

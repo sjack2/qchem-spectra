@@ -25,7 +25,7 @@
 #        --disp {auto,none,D3BJ}   Dispersion correction        [auto]
 #        --ri {none,j,jk}          Density fitting (def2 only)   [none]
 #        --max-iter N              SCF iteration limit           [150]
-#   -c | --cpus N                  CPU cores (threads + SLURM)  [12]
+#   -c | --cpus N                  CPU cores (threads + SLURM)  [4]
 #   -g | --grid LEVEL              Integration grid: coarse|default|fine|ultrafine [default]
 #                                  (also SG1/SG2/SG3 or a 12-digit XC_GRID code)
 #        --scf-conv LEVEL          SCF convergence: default|verytight|extreme [default]
@@ -249,7 +249,7 @@ disp_line() {
         none|NONE)
             printf '' ;;
         D3BJ|d3bj)
-            printf '  DFT_D              D3_BJ' ;;
+            printf '  DFT_D                D3_BJ' ;;
         auto|AUTO)
             # skip if the method string already contains a dispersion suffix
             if [[ $method =~ (-D[0-9]?|-D3BJ|-D3ZERO|-D4)($|[[:space:]]) ]]; then
@@ -261,7 +261,7 @@ disp_line() {
                     printf ''; return ;;
             esac
             # default: add D3BJ
-            printf '  DFT_D              D3_BJ'
+            printf '  DFT_D                D3_BJ'
             ;;
         *)
             die "--disp must be auto, none, or D3BJ (got '$disp_mode')" ;;
@@ -281,11 +281,11 @@ ri_lines() {
         j|J)
             [[ ${basis,,} == def2-* ]] || \
                 die "--ri j needs a def2-* basis (got '${basis}'); RI aux sets are auto-derived only for the def2 family"
-            printf '  AUX_BASIS_J         RIJ-%s' "$basis" ;;
+            printf '  AUX_BASIS_J          RIJ-%s' "$basis" ;;
         jk|JK)
             [[ ${basis,,} == def2-* ]] || \
                 die "--ri jk needs a def2-* basis (got '${basis}')"
-            printf '  AUX_BASIS_J         RIJK-%s\n  AUX_BASIS_K         RIJK-%s' "$basis" "$basis" ;;
+            printf '  AUX_BASIS_J          RIJK-%s\n  AUX_BASIS_K          RIJK-%s' "$basis" "$basis" ;;
         *) die "--ri must be none, j, or jk" ;;
     esac
 }
@@ -385,7 +385,7 @@ write_qchem_input() {
 
     cat >"$inp_file" <<EOF
 \$rem
-  JOBTYPE              OPT
+  JOB_TYPE             OPT
   METHOD               ${method}
   BASIS                ${basis}
   SCF_ALGORITHM        DIIS_GDM
@@ -443,7 +443,7 @@ write_slurm() {
 #SBATCH --error=${abs_workdir}/slurm-%j.err
 
 # ---- Q-Chem environment ----
-source ${qchem_setup}
+${qchem_setup:+source ${qchem_setup}}
 ${CLUSTER_LD_LIBRARY_PATH:+export LD_LIBRARY_PATH=${CLUSTER_LD_LIBRARY_PATH}:\$LD_LIBRARY_PATH}
 export QCSCRATCH=/tmp/\$SLURM_JOB_ID
 

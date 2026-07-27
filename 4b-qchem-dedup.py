@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-conformer_dedup.py -- deduplicate Stage-4 conformers before Boltzmann weighting.
+4b-qchem-dedup.py -- deduplicate Stage-4 conformers before Boltzmann weighting.
 
 Multiple Confab seeds frequently relax to the SAME minimum during the Stage-4
 DFT optimization. Left in place, each redundant copy is counted again in the
@@ -18,10 +18,10 @@ Engine is auto-detected per conformer directory:
     *.log present  -> ORCA    (geometry from <cid>.xyz; energy from the .log)
 
 Usage:
-    conformer_dedup.py TAG
-    conformer_dedup.py --list molecules.txt
-    conformer_dedup.py --rmsd 0.10 --ecut 0.05 ephedrine
-    conformer_dedup.py --dry-run ephedrine        # report only, write nothing
+    4b-qchem-dedup.py TAG
+    4b-qchem-dedup.py --list molecules.txt
+    4b-qchem-dedup.py --rmsd 0.10 --ecut 0.05 ephedrine
+    4b-qchem-dedup.py --dry-run ephedrine        # report only, write nothing
 
 Flags:
     --rmsd A      heavy-atom RMSD cluster threshold, Angstrom   [0.10]
