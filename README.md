@@ -37,6 +37,9 @@ Stage 4                    Solvent-phase re-optimization (implicit solvent)
 Stage 4b                   Deduplicate redundant conformers (optional)
   |                        4b-qchem-dedup.py
   v
+Stage 4c                   Harmonic frequencies -> Gibbs corrections (optional)
+  |                        4c-qchem-freq.sh  then  4c-qchem-thermo.py
+  v
 Stage 5                    Boltzmann weighting & filtering
   |                        5-qchem-boltzmann-weight.sh
   |
@@ -157,6 +160,13 @@ python3 4b-qchem-dedup.py pna
 
 # Stage 5: Boltzmann filter
 ./5-qchem-boltzmann-weight.sh pna
+
+# Stage 4c + 5 (optional): weight on free energy instead of electronic energy.
+# Two passes, so the frequency cost lands only on conformers that can matter.
+./5-qchem-boltzmann-weight.sh --p-cut 0 --e-window 5 pna   # loose prefilter
+./4c-qchem-freq.sh --local --cpus 4 --solvent water pna    # match Stage 4!
+python3 4c-qchem-thermo.py pna
+./5-qchem-boltzmann-weight.sh --gibbs qrrho pna
 
 # --- Electronic spectra branch ---
 # Stage 6-tddft: TD-DFT on populated conformers
@@ -422,6 +432,52 @@ Multiple Confab seeds frequently relax to the *same* minimum during the Stage-4 
 
 Two conformers are merged only when both guards agree: heavy-atom RMSD below `--rmsd` *and* energy gap below `--ecut`. Run with `--dry-run` first to preview which conformers would be merged before writing the keep-list.
 
+### 4c-qchem-freq.sh + 4c-qchem-thermo.py -- Gibbs Corrections (optional)
+
+```
+4c-qchem-freq.sh [OPTIONS] TAG
+4c-qchem-thermo.py [OPTIONS] TAG [TAG ...]
+```
+
+By default Stage 5 weights conformers on the Stage-4 SCF **electronic** energy. That systematically over-populates intramolecularly hydrogen-bonded conformers, which are enthalpically favoured but entropically penalized because the hydrogen bond freezes a torsion. For ECD, where folded and extended conformers can contribute *opposite-sign* rotatory strengths, that bias can change band signs rather than merely rescale the spectrum. This pair of tools computes the thermal correction that turns E into G so Stage 5 can weight on free energy.
+
+A second payoff: an imaginary frequency means Stage 4 converged to a saddle point rather than a minimum. Without this stage nothing in the pipeline notices, and the bad structure is weighted and passed to Stage 6 as though it were real.
+
+**Level of theory must match Stage 4.** A Hessian is only meaningful at its own geometry's level of theory; run `4c-qchem-freq.sh` with the same `--method/--basis/--grid/--solvent/--disp` you gave Stage 4 or you will get spurious imaginary modes. The defaults deliberately mirror `4-qchem-solvent-opt.sh`.
+
+`4c-qchem-thermo.py` reports two entropy treatments side by side:
+
+| Treatment | Meaning |
+|-----------|---------|
+| **RRHO** | Textbook rigid-rotor/harmonic-oscillator. Vibrational entropy diverges as the frequency goes to zero, so for a flexible molecule the 20-60 cm-1 torsional modes -- exactly the ones that distinguish folded from extended conformers -- dominate the entropy and are the least reliable numbers in the calculation. |
+| **qRRHO** | Grimme's quasi-harmonic treatment (*Chem. Eur. J.* **2012**, *18*, 9955), which interpolates each mode between the harmonic and free-rotor limits with a damping function centred on `--qrrho-cutoff`. Preferred for flexible molecules. Applied to the entropy only, per Grimme's original formulation. |
+
+The tool prints the maximum RRHO-vs-qRRHO disagreement in relative G. If that number is large, the harmonic values are the ones to distrust.
+
+`4c-qchem-freq.sh` flags (beyond the usual method/basis/solvent/SLURM set shared with Stages 4 and 6):
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--all` | Use the Stage-4b keep-list (or every conformer) instead of the Stage-5 label file | _Stage-5 labels_ |
+| `--labels FILE` | Explicit conformer-ID list | |
+| `--variant LABEL` | Suffix the output dir -> `03b_freq_LABEL` | |
+
+`4c-qchem-thermo.py` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--temp K` | Temperature in Kelvin (must match Stage 5) | `298.15` |
+| `--pressure ATM` | Pressure in atmospheres | `1.0` |
+| `--qrrho-cutoff CM` | qRRHO damping centre (cm-1) | `100.0` |
+| `--imag-tol CM` | Imaginary modes smaller than this are treated as numerical noise rather than saddle points | `50.0` |
+| `--freq-dir D` | Stage-4c output subdirectory | `03b_freq` |
+| `--dry-run` | Print the report without writing the table | |
+
+**Input:** `<TAG>/03b_freq/<CID>/<CID>.out`
+**Output:** `<TAG>/03b_freq/<TAG>_thermo.dat` (read by Stage 5 `--gibbs`)
+
+The symmetry number is fixed at 1: every conformer of a chiral flexible molecule is C1 and the pipeline runs with `SYM_IGNORE TRUE` throughout. Pointed at a symmetric species, the rotational entropy would be too high by `R*ln(sigma)`. Q-Chem only -- the ORCA mirror prints frequencies and geometry differently and needs its own parser.
+
 ### 5-qchem-boltzmann-weight.sh -- Boltzmann Weighting & Filtering
 
 ```
@@ -432,13 +488,30 @@ Two conformers are merged only when both guards agree: heavy-atom RMSD below `--
 |------|-------------|---------|
 | `--temp K` | Temperature in Kelvin | `298.15` |
 | `--p-cut VAL` | Probability cutoff (e.g., 0.01 = 1%) | `0.01` |
+| `--e-window KCAL` | Also require dE (or dG) at or below this | _none_ |
+| `--gibbs MODE` | Weight on free energy: `none`, `rrho`, `qrrho` | `none` |
+| `--keep-saddles` | Keep conformers with a significant imaginary mode | _drop them_ |
+| `--freq-dir D` | Stage-4c output subdirectory | `03b_freq` |
 | `--list FILE` | Text file of TAGs | |
 | `--dry-run` | Show what would be computed | |
 
-**Input:** `<TAG>/03_solvent_opt/<CID>/<CID>.out` (Q-Chem outputs from Stage 4)
+**Input:** `<TAG>/03_solvent_opt/<CID>/<CID>.out` (Q-Chem outputs from Stage 4), plus `<TAG>/03b_freq/<TAG>_thermo.dat` when `--gibbs` is used
 **Output:**
 - `<TAG>/04_boltzmann/<TAG>_energies.dat` -- full table: conformer ID, energy (Hartree), relative energy (kcal/mol), Boltzmann probability
 - `<TAG>/04_boltzmann/<TAG>_bw_labels.dat` -- conformer IDs above the probability cutoff
+
+`--e-window` is combined with `--p-cut` by AND, so `--p-cut 0 --e-window 5` selects purely on the energy window while the default `--p-cut 0.01` with no window behaves exactly as before.
+
+With `--gibbs`, `G = E_elec` (Stage 4) `+ G_corr` (Stage 4c). Conformers with no usable thermo row are **dropped** rather than falling back to their electronic energy -- a table mixing G for some conformers and E for others would produce populations that mean nothing. Because frequency jobs are expensive, run the stage twice so the cost lands only on conformers that could plausibly matter:
+
+```bash
+./5-qchem-boltzmann-weight.sh --p-cut 0 --e-window 5 TAG   # loose prefilter
+./4c-qchem-freq.sh TAG                                     # freq on survivors
+python3 4c-qchem-thermo.py TAG                             # G corrections
+./5-qchem-boltzmann-weight.sh --gibbs qrrho TAG            # final populations
+```
+
+A conformer cut in the first pass cannot come back in the second, so keep that first window generous.
 
 ### 6-qchem-tddft.sh -- TD-DFT Excited-State Calculations
 

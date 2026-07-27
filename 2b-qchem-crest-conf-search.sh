@@ -23,11 +23,21 @@
 #
 # Flags:
 #   -c | --cpus N         CPU threads for CREST            [4]
+#        --alpb NAME      ALPB implicit solvent for the GFN2 search; 'none' =
+#                         gas phase                                     [none]
 #        --list FILE      File of TAGs or XYZ paths
 #        --local          Run CREST directly (no SLURM)
 #        --dry-run        Echo actions without running
 #        --pre-xyz        Also look in pre_xyz/ for geometries
 #   -h | --help           Show this help and exit
+#
+# Solvation note:
+#   A gas-phase search over-stabilizes intramolecularly hydrogen-bonded
+#   conformers. Where the downstream stages use implicit solvent (Stage 4
+#   --solvent, Stage 6 --solvent), match it here so the ensemble handed to
+#   Stage 4 already contains the conformers that solution actually populates
+#   -- Stage 4 can reoptimize what CREST produced, but it cannot invent
+#   conformers the search never generated.
 #
 #   SLURM-only flags (ignored in --local mode):
 #        --mem MB         Memory for SLURM job (MB)         [4096]
@@ -65,6 +75,7 @@ DEFAULT_CPUS=4
 DEFAULT_MEM_MB=4096
 DEFAULT_PARTITION="general"
 DEFAULT_WALL="06:00:00"
+DEFAULT_ALPB="none"
 XYZ_DIR="pre_xyz"
 
 # ============================================================================
@@ -154,6 +165,7 @@ parse_cli() {
     mem_mb=$DEFAULT_MEM_MB
     partition=$DEFAULT_PARTITION
     wall=$DEFAULT_WALL
+    alpb=$DEFAULT_ALPB
     dry_run=false
     force_local=false
     pre_xyz_fallback=false
@@ -163,13 +175,14 @@ parse_cli() {
 
     local opts
     opts=$(getopt -o hc: \
-        --long help,cpus:,mem:,partition:,time:,list:,local,dry-run,pre-xyz,worker: -- "$@") \
+        --long help,cpus:,alpb:,mem:,partition:,time:,list:,local,dry-run,pre-xyz,worker: -- "$@") \
         || die "Failed to parse options (try --help)"
     eval set -- "$opts"
 
     while true; do
         case $1 in
             -c|--cpus)    cpus=$2;               shift 2 ;;
+            --alpb)       alpb=$2;               shift 2 ;;
             --mem)        mem_mb=$2;             shift 2 ;;
             --partition)  partition=$2;           shift 2 ;;
             --time)       wall=$2;               shift 2 ;;
@@ -184,6 +197,15 @@ parse_cli() {
         esac
     done
     positional+=("$@")
+
+    # Solvent keyword is forwarded verbatim to crest and re-injected into the
+    # SLURM --wrap command line, so reject anything that would not survive
+    # either trip intact.
+    [[ $alpb =~ ^[A-Za-z0-9._+-]+$ ]] || \
+        die "--alpb must be a single solvent keyword or 'none' (got '${alpb}')"
+
+    # pre-rendered CLI fragment: empty for gas phase, ' --alpb <name>' otherwise
+    if [[ ${alpb,,} == none ]]; then alpb_cli=""; else alpb_cli=" --alpb ${alpb}"; fi
 
     # --worker is an internal flag used by SLURM jobs to re-invoke this script
     if [[ -n $worker_tag ]]; then
@@ -252,8 +274,14 @@ run_worker() {
     [[ -f $xyz ]] || die "[worker] ${xyz} not found in $(pwd)"
     command -v crest >/dev/null 2>&1 || die "[worker] crest not in PATH"
 
-    log "[${tag}] launching CREST with ${cpus} threads"
-    crest "$xyz" --gfn2 --T "$cpus" > crest.log 2>&1
+    # built as an array, not a string: IFS is $'\n\t' here, so an unquoted
+    # string of space-separated flags would reach crest as a single argument
+    local -a crest_args=("$xyz" --gfn2)
+    [[ ${alpb,,} == none ]] || crest_args+=(--alpb "$alpb")
+    crest_args+=(--T "$cpus")
+
+    log "[${tag}] launching CREST with ${cpus} threads (solvent: ${alpb})"
+    crest "${crest_args[@]}" > crest.log 2>&1
 
     [[ -s crest_conformers.xyz ]] || die "[${tag}] crest_conformers.xyz not produced"
 
@@ -283,7 +311,7 @@ process_tag() {
         if [[ $exec_mode == slurm ]]; then
             log "[${tag}] (dry run) would submit CREST SLURM job in ${job_dir}"
         else
-            log "[${tag}] (dry run) would run: crest ${tag}.xyz --gfn2 --T ${cpus}"
+            log "[${tag}] (dry run) would run: crest ${tag}.xyz --gfn2${alpb_cli} --T ${cpus}"
         fi
         return
     fi
@@ -302,7 +330,7 @@ process_tag() {
             --time="$wall" \
             --output="slurm-%j.out" \
             --error="slurm-%j.err" \
-            --wrap="bash ${self_path} --worker ${tag} --cpus ${cpus}" \
+            --wrap="bash ${self_path} --worker ${tag} --cpus ${cpus}${alpb_cli}" \
             | awk '{print $4}')
         log "[${tag}] submitted as SLURM job ${jobid}"
         return
@@ -323,6 +351,7 @@ print_banner() {
 -------------------------------------------------------------
  Mode        : ${exec_mode}
  CPU threads : ${cpus}
+ Solvent     : ${alpb}$([[ ${alpb,,} == none ]] && printf ' (gas phase)' || printf ' (ALPB)')
  Dry run     : ${dry_run}
 =============================================================
 EOF
